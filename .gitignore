@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# PaddleOCR / PaddleX models and caches
+.paddleocr/
+.paddlex/
+models/
+model/
+inference/
+*.pdmodel
+*.pdiparams
+*.pdparams
+*.pdopt
+*.onnx
+*.safetensors
+
+# User documents and generated OCR output
+*.pdf
+*-OCR.pdf
+*_OCR.pdf
+output/
+outputs/
+results/
+logs/
+*.log
+
+# Local screenshot source document; extracted PNGs are kept below.
+images.docx
+!docs/images/
+!docs/images/*.png
+
+# Temporary files
+*.tmp
+*.temp
+~$*
