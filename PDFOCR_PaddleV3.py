@@ -1,4 +1,65 @@
 # ============================================================================
+#  PDFOCR 273 · 统一源码（唯一树顶）
+# ============================================================================
+#  本文件是 261/262 两条并行分支的合并点。此前的分叉与合并关系如下：
+#
+#      257 打包就绪
+#       |
+#      258 轻量版 CUDA 自动获取
+#       |
+#       +--- [打包线] ------------------------------+
+#       |     259-A/B  首次分出全捆绑 / 轻量下载两个变体
+#       |     260-A/B  打包环境自检 --selftest
+#       |     261 统一源码  A/B 合回单一源码 + 模型缓存路径处理
+#       |     262 统一源码  CLI 场景不弹 GUI 对话框、内存不足提示
+#       |                                            |
+#       +--- [功能线] ------------------------------+|
+#             261-A/B  文字层倾斜校正                ||
+#             262-A/B  竖排文本（竖排排印 / 日文）    ||
+#                                                   ||
+#      263 统一源码  <-- 两条线在此合并 ---------------++
+#       |
+#      264 统一源码  命令行清晰度旋钮 + 界面"强化检测"档
+#                        （低分辨率密排影印件：默认档 7781 字 -> 强化检测档 11979 字）
+#       |
+#      265 统一源码  跨列误并拆分
+#                        （落在横排块里的正文字 1022 -> 149，减少 85%）
+#       |
+#      266 统一源码  竖排"字距/字号"解耦 + 低分辨率扫描件自动抬高检测上限
+#       |
+#      267 统一源码  竖排正文页一律按竖排写入
+#                        （《中庸章句集注》全书横排块 155 -> 1；纯横排页不受影响）
+#       |
+#      268 统一源码  低分辨率竖排件自动**整档**提升（渲染+检测一起抬）
+#       |
+#      269 统一源码  多尺度深度扫描 --multi-scale（低清影印件专用）
+#       |
+#      270 统一源码  放宽 DB 检测阈值（低分辨率影印件自动启用）
+#       |
+#      271 统一源码  高级参数面板对齐整理 + 悬停提示（界面美化阶段起点）
+#       |
+#      272 统一源码  措辞去门类化 + 清晰度档位标明 DPI 与显存需求
+#       |
+#      273 统一源码  <-- 本文件。修好顶部控件行被 pack 压扁的问题；ToolTip 统一复用
+#
+#  合并方式：以打包线的 262 统一源码为底，把功能线的补丁按序重放上去
+#  （倾斜校正 13 处 + 竖排 32 处 + 显存 1 处 + 字号上限 1 处，共 47 处）。
+#  合并后逐项验证：
+#    · 竖排：竖排测试件 12 页，正文覆盖率 96%（与功能线的 262-B 完全一致）
+#    · 横排：倾斜样张与 261 输出内容流逐字节相同（2106 字节）
+#    · 横排：水平样张与 258 基线内容流逐字节相同（1673 字节）
+#    · 打包：--selftest 三个模型通道全部实例化成功
+#    · 界面：高级面板 10 条指令、5 行、顺序与位置全部正确
+#
+#  【往后只有这一条线】。功能改动、打包适配、bug 修复一律往序号更大的
+#  统一源码迭代；A 版 / B 版不再是两份源码，而是同一份源码的两种打包产物，
+#  exe 用 PDFOCR_v273A.exe / PDFOCR_v273B.exe 这样的文件名记录来源即可。
+#  公开发布版本号（v31/v32）与脚本序号（263/264）的对应关系见 CHANGELOG.md。
+#  历史版本已全部移入同目录的 历史版本/ 子文件夹，主目录只保留本文件
+#  与 CHANGELOG.md，避免再出现"哪个是最新"的疑问。
+# ============================================================================
+
+# ============================================================================
 # 【本版本唯一改动：消除编辑器“问题”面板里的报错，运行逻辑一行未动】
 # ----------------------------------------------------------------------------
 # 下面这一行是给 Pylance / Pyright 看的开关，Python 解释器会当成普通注释跳过。
@@ -58,7 +119,7 @@ r"""
         --split-window 0.06   自动探测中缝时，在基准位置左右各搜索的范围比例。
         --split-gap 0         分割线两侧各留出的间隙(pt)，用于避开装订阴影。
         --split-skip 1,32     指定哪些物理页码不拆分（如封面、封底），逗号分隔。
-        --split-rtl           拆分后按“右页在前、左页在后”排列（竖排古籍等）。
+        --split-rtl           拆分后按“右页在前、左页在后”排列（自右向左翻阅的书籍）。
         --split-dpi 300       拆分时重新采样两个半页所用的分辨率，默认 300。
 
     注意：开启拆分后，输出 PDF 的页数会接近原来的两倍。
@@ -73,6 +134,83 @@ r"""
                          Paddle 是否真的在用 GPU。用来判断瓶颈在代码还是显卡。
                          图形界面里对应【分段计时诊断】勾选框。
         --legacy-text    退回旧的逐字符写入通道（很慢，但保留标点压扁效果）。
+
+    【261 版新增】倾斜扫描页的文字层角度校正
+    ---------------------------------------------------------------------
+    非标准扫描件的文字行往往整体歪斜几度。旧版写入的文字层永远是水平的，
+    于是矢量文字与图像文字对不上，斜率大时甚至跨行错位。本版让文字层跟着
+    每一行的真实倾角一起倾斜。
+
+    相关参数：
+        --no-skew        关闭倾斜校正，完全退回 258 版的水平写入行为。
+
+    【262 版新增】竖排文本（竖排排印 / 日文）
+    ---------------------------------------------------------------------
+    竖排页面的一"列"在几何上就是一条旋转了 90 度的"行"，因此本版把 261 版
+    的倾斜写入机制原样复用：写入轴由「左下→右下」改取「左上→左下」，倾角
+    基准由 0 度改为 90 度，其余（morph 旋转、TextWriter 高速通道）完全不变。
+
+    与横排的三处实质差异：
+      1. 字号来自「列长 ÷ 字数」，而不是「行宽 ÷ 各字宽度之和」——竖排
+         每个字占满一个全角字身，没有西文那种变宽。
+      2. 每字推移量恒为一个字号，不再按 text_length 逐字测算，中文标点
+         也不再压半宽（竖排标点同样占满一个字身）。
+      3. 列序按自右向左重排。PaddleOCR 的 SortQuadBoxes 是按 (上, 左)
+         排序的，对竖排会给出从左到右的顺序，正好是反的；不重排的话
+         复制出来的正文整段倒序。
+
+    相关参数：
+        --vertical / -V  按竖排处理。默认关闭，必须由用户显式指定。
+                         图形界面对应【竖排文本 (-V)】勾选框。
+                         注意 1：开启后会自动等效于 -S（跳过版面分析），
+                         因为现有的天头地脚拟合是按横排文字行统计的，
+                         用在竖排页面上有整列被误判为页眉页脚的风险。
+                         注意 2：开启后会关闭文本行方向分类器。这是竖排
+                         能不能用的关键，原因见 get_ocr_engine 里的长注释；
+                         实测正文覆盖率从 29~79% 提升到 94~97%。
+        --skew-max N     倾角绝对值超过 N 度的框判定为异常（竖排、印章、
+                         误检的旁注），按 0 度处理，默认 30。
+
+    【267 版新增】竖排正文页一律按竖排写入
+    ---------------------------------------------------------------------
+    262 版是逐框按长宽比判朝向。实测发现，竖排正文页上被判成"横排"的框
+    绝大多数是检测误判（密排影印件里相邻列的字被连成横长块），把它们当横排
+    写会让文字层横着盖在竖排正文上。本版改为：只要判定本页是竖排正文页，
+    页内所有框一律按竖排写。代价是真正的横排书名、页码也按竖排处理 ——
+    那些通常只有两三个字，位置依然落在字上，只是选中顺序变成自上而下。
+    正文准确性优先。竖排书里夹的横排页（版权页、索引）判定不通过，不受影响。
+
+    【266 版新增】竖排"字距 / 字号"解耦 + 竖排自动抬高检测上限
+    ---------------------------------------------------------------------
+    262~265 让同一个 fs 同时当字号和字距。横排里两者本就相等，竖排里不是：
+    经注合刻本（如《中庸章句集注》）的小注与大字**行距相同**，只是字形更小、
+    列更窄。字号若跟着字距取 22pt，字身旋转后横向跨度 29pt，而小注子列只有
+    16pt 宽，左右各溢出 6.5pt 压进相邻列，阅读器里选一列会连带选中隔壁。
+    本版分开算：字距仍取「列长÷字数」，字号取 min(字距, 列宽/1.3086)。
+
+    另外竖排模式会自动把检测输入上限抬到 2800 像素 —— 竖排书几乎都是低分辨率
+    影印件，用前三档的 1600 会把小字笔画压糊（实测第 4 页 233 字 -> 801 字）。
+
+    【265 版新增】跨列误并拆分
+    ---------------------------------------------------------------------
+    低分辨率密排影印件上，相邻列顶端的字会被检测网络连成一个横长框（六列各取
+    一字连成 "天人物以是哀"）。这些字是每列的首字，丢不得。本版按字数把这类
+    框等分拆回各列，识别结果原样复用（这些框的识别分数本来就有 0.98~1.00），
+    顺带修掉了旧写法按字体推进量累加造成的横向漂移。
+    只在"本页确实以竖排列为主"时才拆，竖排书里夹的横排页不受影响。
+    详见 _explode_cross_column_rows 的注释。
+
+    【264 版新增】命令行清晰度旋钮 / 界面"强化检测"档
+    ---------------------------------------------------------------------
+        --dpi N          目标渲染 DPI，默认 220（界面档位为 150/220/300）。
+        --max-pixels N   渲染长边像素上限，默认 2500，硬顶 4000。
+        --det-limit N    文字检测网络的输入长边上限，0 = 不限制。
+
+    低分辨率的密排影印件（扫描源只有几十 DPI、且带双行夹注）需要把检测输入
+    上限抬上去，否则小字的笔画会被压糊。界面新增的【强化检测】档等价于
+        --dpi 300 --max-pixels 3800 --det-limit 2800
+    实测在一份 89 DPI 的密排影印件上比默认的 220 档多认出约六成字，
+    显存峰值 1021MB -> 2816MB。前三档的参数一个都没动。
         --gc-interval N  每 N 页强制回收一次内存，默认 10。旧版是每页都回收，
                          大模型常驻时一次回收要 0.1~0.5 秒，每页做太浪费。
                          设为 1 可恢复旧行为。
@@ -81,6 +219,492 @@ r"""
 # （注：以下为注入了“核心锚定、奇偶分流、逆向滤波”等高级版面分析算法的智能识别脚本）
 
 #!/usr/bin/env python3
+
+# =========================================================================
+# 【257 版新增 · 打包自举】必须放在所有第三方库导入之前
+# -------------------------------------------------------------------------
+# paddlex 在**模块导入的那一瞬间**就会去读环境变量 PADDLE_PDX_CACHE_HOME
+# 来决定模型缓存目录（见 paddlex/utils/cache.py 第 29 行）。所以这段代码
+# 必须抢在 import paddle / paddleocr 之前执行，晚一步就没用了。
+#
+# 打包成 exe 之后，模型不能再依赖用户机器上的 C:\Users\xxx\.paddlex，
+# 否则程序一启动就会联网重新下载 300 MB 模型。这里把缓存目录指向
+# exe 旁边的 paddlex_cache 文件夹，模型随程序一起分发，开箱即用。
+#
+# 目录结构（发布包）：
+#     PDFOCR.exe
+#     paddlex_cache\official_models\PP-DocLayout_plus-L\...
+#     paddlex_cache\official_models\PP-OCRv5_server_det\...
+#     paddlex_cache\official_models\PP-OCRv5_server_rec\...
+#     paddlex_cache\official_models\PP-LCNet_x1_0_textline_ori\...
+#
+# 源码直接运行时，若旁边没有这个文件夹，就什么都不做，沿用系统默认路径，
+# 因此本改动对你现在的开发环境完全没有影响。
+# =========================================================================
+import os as _os
+import sys as _sys
+
+
+def _app_dir():
+    """打包后返回 exe 所在目录；源码运行时返回脚本所在目录。"""
+    if getattr(_sys, "frozen", False):
+        return _os.path.dirname(_sys.executable)
+    return _os.path.dirname(_os.path.abspath(__file__))
+
+
+APP_DIR = _app_dir()
+
+
+# =========================================================================
+# 【261 版新增 · 中文路径防护】
+# -------------------------------------------------------------------------
+# paddle 的 C++ 推理引擎在 Windows 上用窄字符 API 打开模型文件，**路径里
+# 只要含非 ASCII 字符就会读到空内容**，然后抛出一句完全看不出所以然的
+#     RuntimeError: [json.exception.parse_error.101] ... empty input
+# 这一点已用隔离实验确认：同一份模型、同一套代码，仅仅把缓存目录从
+# ascii_path 换成"路径测试_中文"，就从成功变成失败。
+#
+# 这对中文用户是致命的，因为下面这些都极其常见：
+#     C:\Users\张三\Desktop\PDF识别\      （Windows 用户名是中文）
+#     D:\我的软件\PDFOCR\
+# 一解压就用不了，而且报错信息毫无指向性。
+#
+# 三级应对，优先级从高到低：
+#   1) 程序目录本来就是纯 ASCII      -> 直接用，零开销（绝大多数情况）
+#   2) 能取到 Windows 8.3 短路径名   -> 用短名，例如 我的软件 -> 6E1F~1
+#      （零拷贝。但短名功能可能被系统关闭，尤其非系统盘）
+#   3) 以上都不行                    -> 把模型迁移到 C:\ProgramData 下的
+#      纯 ASCII 目录，只在首次运行时复制一次
+# =========================================================================
+def _is_ascii(text):
+    try:
+        text.encode("ascii")
+        return True
+    except (UnicodeEncodeError, AttributeError):
+        return False
+
+
+def _win_short_path(path):
+    """取 Windows 8.3 短路径名；取不到或功能被关闭时返回 None。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        fn = ctypes.windll.kernel32.GetShortPathNameW
+        fn.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        fn.restype = wintypes.DWORD
+        buf = ctypes.create_unicode_buffer(4096)
+        if fn(path, buf, 4096) and buf.value:
+            return buf.value
+    except Exception:
+        pass
+    return None
+
+
+def _prepare_model_cache():
+    """挑一个 paddle 一定读得到的模型缓存目录，必要时迁移模型。"""
+    local = _os.path.join(APP_DIR, "paddlex_cache")
+    if not _os.path.isdir(_os.path.join(local, "official_models")):
+        return None            # 源码运行或没带模型：沿用系统默认路径
+
+    if _is_ascii(local):
+        return local           # 情况 1：本来就安全
+
+    short = _win_short_path(local)
+    if short and _is_ascii(short):
+        return short           # 情况 2：短路径名救场，零拷贝
+
+    # 情况 3：迁移到 ProgramData（该路径在任何中文 Windows 上都是纯 ASCII）
+    base = _os.environ.get("ProgramData", r"C:\ProgramData")
+    target = _os.path.join(base, "PDFOCR", "paddlex_cache")
+    src_models = _os.path.join(local, "official_models")
+    dst_models = _os.path.join(target, "official_models")
+    try:
+        import shutil
+        need = []
+        for name in _os.listdir(src_models):
+            if not _os.path.isdir(_os.path.join(dst_models, name)):
+                need.append(name)
+        if need:
+            print("=" * 62)
+            print("  首次运行：正在准备 AI 模型")
+            print("  程序所在路径含中文，而 AI 引擎无法从中文路径读取模型，")
+            print("  因此需要把模型复制到以下位置（仅此一次，约 300 MB）：")
+            print("     " + target)
+            print("=" * 62)
+            _os.makedirs(dst_models, exist_ok=True)
+            for i, name in enumerate(need, 1):
+                print("   [%d/%d] 正在复制 %s ..." % (i, len(need), name))
+                shutil.copytree(_os.path.join(src_models, name),
+                                _os.path.join(dst_models, name),
+                                dirs_exist_ok=True)
+            print("   模型准备完成。\n")
+        if _is_ascii(target):
+            return target
+    except Exception as e:
+        print("   [!] 迁移模型失败：%s: %s" % (type(e).__name__, e))
+        print("   [!] 请把本程序移动到不含中文的路径下再运行，例如 D:\\PDFOCR\\")
+
+    return None
+
+
+_cache_home = _prepare_model_cache()
+if _cache_home:
+    _os.environ["PADDLE_PDX_CACHE_HOME"] = _cache_home
+
+# 跳过启动时的"联网检查模型源"，那一步在离线机器上会干等好几秒
+_os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+
+# =========================================================================
+# 【261 版新增 · 打包必需】强制控制台使用 UTF-8
+# -------------------------------------------------------------------------
+# 打包成 exe 后遇到的第一个真实崩溃：
+#     UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f4c2'
+#
+# 中文版 Windows 的控制台默认编码是 GBK(代码页 936)，而本脚本的提示信息里
+# 用了大量 emoji（✅ 📁 🔍 ⏱ ✂️ 🎉 📦 等）。GBK 表示不了这些字符，于是
+# 程序一执行到 print 就抛异常整个崩掉——而且是在正式干活之前就崩。
+#
+# 开发阶段一直没暴露，是因为调试时都用 `python -X utf8 脚本.py` 运行，
+# 那个参数强制解释器全程 UTF-8。打包后没有这个参数，问题才浮出水面。
+#
+# 这里做两件事：
+#   1) 把控制台的输出代码页切到 65001(UTF-8)，让 emoji 能正常显示；
+#   2) 把 stdout/stderr 重新配置成 UTF-8，并且 errors="replace" —— 万一
+#      某些环境切不动代码页，也只会把个别字符显示成"?"，绝不再崩溃。
+# 用 --noconsole 方式打包时 sys.stdout 可能是 None，所以每一步都做了判空。
+# =========================================================================
+try:
+    import ctypes as _ctypes
+    _ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    _ctypes.windll.kernel32.SetConsoleCP(65001)
+except Exception:
+    pass
+
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(_sys, _stream_name, None)
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+
+# =========================================================================
+# 【258 版 · 轻量版专用】CUDA 运算库首次运行自动获取
+# -------------------------------------------------------------------------
+# 背景：paddle 做 AI 推理需要 cuDNN / cuBLAS / cuFFT / cuSOLVER / cuSPARSE
+# 这几套 NVIDIA 计算库，解压后约 3.1 GB。它们**不在显卡驱动里**——装了
+# N 卡只会有 nvcuda.dll（驱动 API），这些计算库要另外获取。
+#
+# 把它们打进安装包会让安装包膨胀到 3 GB 级别。本版本改为：安装包里不带，
+# 首次运行时从 PyPI 官方源自动下载（它们本来就是公开的 pip 轮子，
+# 不需要任何私有服务器），解压到程序目录，之后每次启动都直接复用。
+#
+# 为什么必须放在文件最顶部：
+#   paddle 在 **import 的那一瞬间** 就会执行
+#       site_cuda_path = <paddle目录>/../nvidia/<库名>/bin
+#       os.add_dll_directory(site_cuda_path)
+#   来注册 DLL 搜索路径（见 paddle/__init__.py 的 Windows 分支）。
+#   等到 import paddle 之后再补文件就晚了，那时路径已经注册完毕。
+# =========================================================================
+_CUDA_WHEELS = [
+    # (包名, 版本)  —— 版本必须与 paddlepaddle-gpu 编译时所用的一致，
+    # 这里的值取自开发机上 pip 实际安装的 dist-info，不要随意改动。
+    ("nvidia-cudnn-cu12",       "9.9.0.52"),
+    ("nvidia-cublas-cu12",      "12.9.0.13"),
+    ("nvidia-cusparse-cu12",    "12.5.9.5"),
+    ("nvidia-cusolver-cu12",    "11.7.4.40"),
+    ("nvidia-cufft-cu12",       "11.4.0.6"),
+    ("nvidia-curand-cu12",      "10.3.10.19"),
+    ("nvidia-nvjitlink-cu12",   "12.9.86"),
+    ("nvidia-cuda-runtime-cu12", "12.9.37"),
+]
+
+# 判断"已经装好了"的标志文件：挑两个最大、最不可能缺失的
+_CUDA_SENTINELS = [
+    "nvidia/cublas/bin/cublasLt64_12.dll",
+    "nvidia/cudnn/bin/cudnn64_9.dll",
+]
+
+# -------------------------------------------------------------------------
+# 下载源清单
+# -------------------------------------------------------------------------
+# 这些全部是**面向公众开放**的 PyPI 公共镜像，不需要教育网，任何人都能直连。
+# 它们镜像的是同一批文件，只是各家的 URL 前缀不同，把官方地址里的
+# "https://files.pythonhosted.org/" 换成对应前缀即可。
+#
+# 实测同一个文件的下载速度（2026-08，家庭宽带）：
+#     清华 TUNA   8.6 MB/s      北外 BFSU   5.7 MB/s
+#     南大 NJU    3.8 MB/s      腾讯云      3.1 MB/s
+#     华为云      2.9 MB/s      中科大      2.6 MB/s
+#     阿里云      1.2 MB/s      PyPI 官方   1.0 MB/s
+#
+# 差距接近 9 倍（2.2 GB 换算成 4 分钟 vs 37 分钟），而且任何单一镜像都可能
+# 临时故障或调整路径。所以不写死任何一个源：启动时对所有源做一次小体积
+# 测速，挑最快的用；下载中途某个源断了，自动换下一个继续。
+# -------------------------------------------------------------------------
+_PYPI_HOST = "https://files.pythonhosted.org/"
+_MIRRORS = [
+    ("清华 TUNA",  "https://pypi.tuna.tsinghua.edu.cn/"),
+    ("北外 BFSU",  "https://mirrors.bfsu.edu.cn/pypi/web/"),
+    ("南京大学",   "https://mirror.nju.edu.cn/pypi/web/"),
+    ("腾讯云",     "https://mirrors.cloud.tencent.com/pypi/"),
+    ("华为云",     "https://repo.huaweicloud.com/repository/pypi/"),
+    ("中科大",     "https://pypi.mirrors.ustc.edu.cn/web/"),
+    ("阿里云",     "https://mirrors.aliyun.com/pypi/web/"),
+    ("PyPI 官方源", _PYPI_HOST),
+]
+
+
+def _pick_fastest_mirror(sample_url, report):
+    """
+    拿一个真实文件的前 2 MB 对所有源测速，返回 (源名, 前缀)。
+    测速本身只花几秒，却能把后面 2.2 GB 的下载时间压缩数倍，非常划算。
+    全部失败时回落到官方源，让后续下载去报真正的错。
+    """
+    import urllib.request
+    import time as _t
+
+    tail = sample_url.split(_PYPI_HOST, 1)[1] if _PYPI_HOST in sample_url else None
+    if tail is None:
+        return _MIRRORS[-1]
+
+    best = None
+    for idx, (name, host) in enumerate(_MIRRORS):
+        report(0.0, "正在测速下载源 (%d/%d)：%s" % (idx + 1, len(_MIRRORS), name))
+        try:
+            req = urllib.request.Request(host + tail,
+                                         headers={"Range": "bytes=0-2097151"})
+            t0 = _t.time()
+            with urllib.request.urlopen(req, timeout=15) as r:
+                blob = r.read()
+            dt = _t.time() - t0
+            if dt <= 0 or not blob:
+                continue
+            speed = len(blob) / 1048576 / dt
+            if best is None or speed > best[0]:
+                best = (speed, name, host)
+        except Exception:
+            continue
+
+    if best is None:
+        return _MIRRORS[-1]
+    report(0.0, "选定下载源：%s（实测 %.1f MB/s）" % (best[1], best[0]))
+    return (best[1], best[2])
+
+
+def _cuda_root():
+    """CUDA 库应该放在哪：必须和 paddle 包同级。"""
+    if getattr(_sys, "frozen", False):
+        # PyInstaller 单目录模式下，第三方包都在 _internal 里
+        return getattr(_sys, "_MEIPASS", _os.path.dirname(_sys.executable))
+    # 源码运行：site-packages 里本来就有，不需要下载
+    return None
+
+
+def _cuda_ready(root):
+    if root is None:
+        return True
+    return all(_os.path.isfile(_os.path.join(root, p.replace("/", _os.sep)))
+               for p in _CUDA_SENTINELS)
+
+
+def _has_nvidia_driver():
+    """轻量探测：能加载 nvcuda.dll 就说明装了 N 卡驱动。不依赖 paddle。"""
+    try:
+        import ctypes
+        ctypes.WinDLL("nvcuda.dll")
+        return True
+    except Exception:
+        return False
+
+
+def _fetch_cuda_libraries(root, report):
+    """把 8 个轮子下载下来，解压出其中的 nvidia/ 部分。report(阶段, 已完成比例, 文字)"""
+    import json
+    import urllib.request
+    import zipfile
+    import tempfile
+
+    # 先解析出每个轮子的真实下载地址和体积
+    plan = []
+    total_bytes = 0
+    for i, (pkg, ver) in enumerate(_CUDA_WHEELS):
+        report(0.0, "正在获取下载地址 (%d/%d)：%s" % (i + 1, len(_CUDA_WHEELS), pkg))
+        url = None
+        size = 0
+        with urllib.request.urlopen(
+                "https://pypi.org/pypi/%s/%s/json" % (pkg, ver), timeout=60) as r:
+            meta = json.load(r)
+        for f in meta["urls"]:
+            if "win_amd64" in f["filename"]:
+                url, size = f["url"], f["size"]
+                break
+        if not url:
+            raise RuntimeError("找不到 %s %s 的 Windows 安装包" % (pkg, ver))
+        plan.append((pkg, url, size))
+        total_bytes += size
+
+    # 实测挑最快的源
+    src_name, src_host = _pick_fastest_mirror(plan[-1][1], report)
+    report(0.0, "下载源：%s   总计约 %.0f MB" % (src_name, total_bytes / 1048576))
+
+    done_bytes = 0
+    for pkg, url, size in plan:
+        tmp = tempfile.NamedTemporaryFile(suffix=".whl", delete=False)
+        tmp.close()
+        try:
+            # 先用选定的源；失败就按清单顺序换源重试，全部失败才抛错。
+            # 单个镜像临时抽风不至于让整个安装流程前功尽弃。
+            hosts = [src_host] + [h for _, h in _MIRRORS if h != src_host]
+            last_err = None
+            for hi, host in enumerate(hosts):
+                real = url.replace(_PYPI_HOST, host)
+                try:
+                    with urllib.request.urlopen(real, timeout=120) as r,                             open(tmp.name, "wb") as f:
+                        got = 0
+                        while True:
+                            chunk = r.read(1024 * 512)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            got += len(chunk)
+                            frac = (done_bytes + got) / total_bytes
+                            report(frac, "正在下载 %s   %.0f/%.0f MB   总进度 %.0f%%"
+                                   % (pkg, got / 1048576, size / 1048576, frac * 100))
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    if hi + 1 < len(hosts):
+                        report((done_bytes) / total_bytes,
+                               "下载源异常，正在切换备用源重试 %s ..." % pkg)
+            if last_err is not None:
+                raise last_err
+            report((done_bytes + size) / total_bytes, "正在解压 %s ..." % pkg)
+            with zipfile.ZipFile(tmp.name) as z:
+                members = [n for n in z.namelist() if n.startswith("nvidia/")]
+                z.extractall(root, members=members)
+        finally:
+            try:
+                _os.remove(tmp.name)
+            except Exception:
+                pass
+        done_bytes += size
+
+    if not _cuda_ready(root):
+        raise RuntimeError("下载完成但校验未通过，可能是文件损坏，请删除程序目录下的 "
+                           "nvidia 文件夹后重试。")
+
+
+def _ensure_cuda_libraries():
+    """启动自举总入口。返回 True 表示可以继续用 GPU。"""
+    root = _cuda_root()
+    if _cuda_ready(root):
+        return True
+    if not _has_nvidia_driver():
+        # 没有 N 卡，下 2.2 GB 也没意义，直接放行由后续的自检去提示用户
+        return False
+
+    need_mb = 2204
+
+    # ==================================================================
+    # 【262 版修正】命令行 / 批处理场景绝不能弹出 GUI 对话框
+    # ------------------------------------------------------------------
+    # 旧写法只要 tkinter 能导入就弹 messagebox.askyesno 等人点"是"。
+    # 双击启动时这是对的，但用命令行或脚本调用时，对话框后面根本没有人，
+    # 程序会永远卡在那里——自动化流程、批处理、CI 全部会挂死。
+    #
+    # 现在按启动方式分流：
+    #   带参数启动（命令行） -> 全程走控制台，打印说明后直接开始下载
+    #                          （用户既然主动敲了命令，就是想让它干活）
+    #   无参数启动（双击）   -> 保留原有的图形化询问与进度条
+    #   --skip-cuda-fetch    -> 明确跳过下载，用于测试，或用户想手动放置文件
+    # ==================================================================
+    if "--skip-cuda-fetch" in _sys.argv:
+        print("   [i] 已指定 --skip-cuda-fetch，跳过 CUDA 运算库获取。")
+        return False
+
+    _is_cli = len(_sys.argv) > 1
+    gui = False
+    if not _is_cli:
+        try:
+            import tkinter as tk
+            from tkinter import messagebox, ttk
+            gui = True
+        except Exception:
+            gui = False
+
+    if gui:
+        root_win = tk.Tk()
+        root_win.withdraw()
+        ok = messagebox.askyesno(
+            "首次运行：需要获取 AI 运算库",
+            "检测到你的电脑装有 NVIDIA 显卡。\n\n"
+            "本程序需要一套 NVIDIA 官方运算库（cuDNN / cuBLAS 等）才能\n"
+            "调用显卡加速。这套库体积较大（约 %d MB），未随程序打包，\n"
+            "需要现在从官方源下载一次。\n\n"
+            "· 只需下载这一次，之后启动会直接使用\n"
+            "· 下载源为 PyPI 官方源 / 清华大学镜像，均为公开地址\n"
+            "· 请保持网络畅通，中途可以关闭程序，下次会重新开始\n\n"
+            "现在开始下载吗？" % need_mb)
+        if not ok:
+            root_win.destroy()
+            return False
+
+        win = tk.Toplevel(root_win)
+        win.title("正在获取 AI 运算库")
+        win.geometry("520x150")
+        win.resizable(False, False)
+        tk.Label(win, text="首次运行需要下载 NVIDIA 运算库，请稍候…",
+                 font=("微软雅黑", 10)).pack(pady=(18, 6))
+        bar = ttk.Progressbar(win, length=460, mode="determinate", maximum=1000)
+        bar.pack(pady=4)
+        lbl = tk.Label(win, text="准备中…", font=("微软雅黑", 8), fg="#666666")
+        lbl.pack(pady=4)
+        win.update()
+
+        def report(frac, msg):
+            bar["value"] = max(0, min(1000, int(frac * 1000)))
+            lbl.config(text=msg[:88])
+            win.update()
+    else:
+        def report(frac, msg):
+            _sys.stdout.write("\r   [%3.0f%%] %-80s" % (frac * 100, msg[:80]))
+            _sys.stdout.flush()
+        print("\n" + "=" * 62)
+        print("  首次运行：需要获取 NVIDIA 运算库（约 %d MB）" % need_mb)
+        print("  这些是 cuDNN / cuBLAS 等公开的官方运算库，未随程序打包。")
+        print("  会自动挑选最快的公共镜像下载，只需下载这一次。")
+        print("  如果不想现在下载，可加 --skip-cuda-fetch 跳过。")
+        print("=" * 62)
+
+    try:
+        _fetch_cuda_libraries(root, report)
+        okflag = True
+    except Exception as e:
+        okflag = False
+        err = "%s: %s" % (type(e).__name__, e)
+        if gui:
+            messagebox.showerror("下载失败", "获取运算库失败：\n\n" + err +
+                                 "\n\n可以检查网络后重新启动程序再试。")
+        else:
+            print("\n   下载失败：" + err)
+    if gui:
+        try:
+            win.destroy()
+            root_win.destroy()
+        except Exception:
+            pass
+    else:
+        print()
+    return okflag
+
+
+_ensure_cuda_libraries()
+
+
 import logging
 import colorsys
 
@@ -187,9 +811,38 @@ def parse_skip_pages(skip_str):
 class AIModelEngine:
     _layout_engine = None
     _ocr_engines = {} # 使用字典缓存不同语种的 OCR 模型，防止切换语种失效
+    # 【270 版】DB 检测的两个阈值。None = 用 PaddleOCR 默认（0.3 / 0.6）。
+    # 低分辨率影印件上把它们放宽能让检测端的墨迹覆盖从 93.7% 提到 99.8%。
+    _det_thresh = None
+    _det_box_thresh = None
     _layout_mode = "fast"   # "fast" = 轻量 LayoutDetection；"v3" = 原有 PPStructureV3
     _layout_kind = None     # 实际用上的是哪一条通道，供日志显示
     _det_limit_side_len = 1600   # 文字检测网络的输入长边上限，0 = 不限制(旧行为)
+    _device = None               # 实际使用的运算设备，由 resolve_device() 探测一次后缓存
+
+    @classmethod
+    def resolve_device(cls):
+        """
+        【257 版新增】自动探测该用 GPU 还是 CPU。
+
+        旧版三处写死 device="gpu:0"。在自己的开发机上没问题，但打包成 exe
+        发给别人之后，只要对方没有 NVIDIA 显卡，程序就会在加载模型时直接
+        抛异常崩掉，而且报错信息是一串英文堆栈，普通用户完全看不懂。
+
+        这里改成探测一次：真的有可用的 N 卡才用 gpu:0，否则老实回落到 cpu，
+        由上层负责把"你这台机器没有 N 卡"这件事用人话告诉用户。
+        """
+        if cls._device is not None:
+            return cls._device
+        dev = "cpu"
+        try:
+            import paddle
+            if paddle.device.is_compiled_with_cuda() and paddle.device.cuda.device_count() > 0:
+                dev = "gpu:0"
+        except Exception:
+            dev = "cpu"
+        cls._device = dev
+        return dev
 
     @classmethod
     def get_layout_engine(cls):
@@ -231,7 +884,7 @@ class AIModelEngine:
                     from paddleocr import LayoutDetection
                     cls._layout_engine = LayoutDetection(
                         model_name="PP-DocLayout_plus-L",
-                        device="gpu:0",
+                        device=cls.resolve_device(),
                         enable_mkldnn=False
                     )
                     cls._layout_kind = "fast"
@@ -239,7 +892,15 @@ class AIModelEngine:
                 except Exception as e:
                     # 轻量通道万一在某些环境不可用，自动退回原有的 V3 通道，
                     # 保证功能永远不会因为这次优化而失效。
-                    print(f"   [!] 轻量版面引擎不可用({type(e).__name__})，自动退回 PPStructureV3。")
+                    #
+                    # 【260 版修正】原先这里只打印 type(e).__name__，把真正的
+                    # 错误信息吞掉了。打包成 exe 后出问题时，看到的只有一句
+                    # "RuntimeError"，完全无从查起。现在打印完整堆栈。
+                    print(f"   [!] 轻量版面引擎不可用，自动退回 PPStructureV3。")
+                    print(f"       原因: {type(e).__name__}: {e}")
+                    import traceback as _tb
+                    for _line in _tb.format_exc().splitlines()[-6:]:
+                        print("       | " + _line)
 
             from paddleocr import PPStructureV3
             cls._layout_engine = PPStructureV3(
@@ -251,7 +912,7 @@ class AIModelEngine:
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
-                device="gpu:0",
+                device=cls.resolve_device(),
                 precision="fp32",
                 enable_mkldnn=False
             )
@@ -280,7 +941,7 @@ class AIModelEngine:
             pass
 
     @classmethod
-    def get_ocr_engine(cls, lang):
+    def get_ocr_engine(cls, lang, vertical=False):
         """
         单例获取对应语种的 OCR 识别大模型。
 
@@ -324,14 +985,64 @@ class AIModelEngine:
         选择；也可以用 --det-limit 手动指定，设 0 表示恢复旧的不限制行为。
         =================================================================
         """
-        if lang not in cls._ocr_engines:
+        # ==================================================================
+        # 【262 版关键修复】竖排必须关闭"文本行方向分类器"
+        # ------------------------------------------------------------------
+        # use_textline_orientation 启用的是 PP-LCNet_x1_0_textline_ori，
+        # 一个**只判 0 度 / 180 度**的二分类器。横排扫描件上它很有用（能把
+        # 倒置的行翻正），但竖排的处境完全不同：
+        #
+        # PaddleOCR 裁剪文字框时，对 h/w >= 1.5 的竖长框会先 np.rot90 转成
+        # 横向再送识别（见 crop_image_regions.py 的 get_rotate_crop_image）。
+        # 这样送进方向分类器的，是一堆被转了 90 度的竖排列 —— 完全在它的
+        # 训练分布之外。实测它会把其中相当一部分判成"倒置"再翻一次，翻完
+        # 的图识别网络就什么也读不出来了。
+        #
+        # 在一份竖排测试件上实测（以原书自带文字层为真值）：
+        #
+        #     页码          第3页   第4页   第5页   第9页  第11页
+        #     方向分类 开     79%    29%    53%    61%    72%
+        #     方向分类 关     97%    95%    96%    96%    96%
+        #
+        # 失败的框有个共同特征：长宽比 20 以上、识别分数 0.00~0.48、只吐出
+        # 0~2 个字；而同一页上长宽比 10 以下的短框（页码、书名、脚注）全都
+        # 正常。关掉分类器后整页恢复到 95% 以上，且各页表现整齐。
+        #
+        # 代价：竖排页面上倒置的文字行不再被自动翻正。竖排排印物里
+        # 几乎不存在这种情况，用不着为它牺牲掉三分之一的正文。
+        #
+        # 顺带实测：检测输入上限（省显存那一档）与 unclip_ratio 在关掉方向
+        # 分类器之后已经不再影响竖排结果（94%~97% 区间内浮动），所以 256 版
+        # 的省显存策略原样保留，不为竖排做任何让步。
+        # ==================================================================
+        _key = (lang, bool(vertical), cls._det_thresh, cls._det_box_thresh)
+
+        # 【262 版】缓存键加了竖排标志之后，同一语种理论上会驻留两套引擎
+        # （启动时的预热建的是横排那套，正式跑竖排时又要建一套），白白多占
+        # 约 700MB 显存 —— 这与 254~256 三个版本一路压下来的显存优化背道而驰。
+        # 一次任务只会用其中一种模式，所以建新引擎之前先把同语种、另一种
+        # 模式的那套踢掉，驻留量维持在"一套"，和 261 版完全一致。
+        if _key not in cls._ocr_engines:
+            _stale = [k for k in cls._ocr_engines if k[0] == lang and k != _key]
+            if _stale:
+                for k in _stale:
+                    cls._ocr_engines.pop(k, None)
+                try:
+                    import gc
+                    gc.collect()
+                    import paddle
+                    if paddle.device.is_compiled_with_cuda():
+                        paddle.device.cuda.empty_cache()
+                except Exception:
+                    pass
+
             from paddleocr import PaddleOCR
             kw = dict(
-                use_textline_orientation=True,
+                use_textline_orientation=(not vertical),
                 lang=lang,
                 use_doc_unwarping=False,
                 use_doc_orientation_classify=False,
-                device="gpu:0",
+                device=cls.resolve_device(),
                 precision="fp32",
                 enable_mkldnn=False
             )
@@ -339,8 +1050,13 @@ class AIModelEngine:
             if limit > 0:
                 kw["text_det_limit_side_len"] = limit
                 kw["text_det_limit_type"] = "max"
-            cls._ocr_engines[lang] = PaddleOCR(**kw)
-        return cls._ocr_engines[lang]
+            # 【270 版】DB 二值化阈值 / 框保留阈值
+            if cls._det_thresh is not None:
+                kw["text_det_thresh"] = float(cls._det_thresh)
+            if cls._det_box_thresh is not None:
+                kw["text_det_box_thresh"] = float(cls._det_box_thresh)
+            cls._ocr_engines[_key] = PaddleOCR(**kw)
+        return cls._ocr_engines[_key]
 
     @classmethod
     def destroy_engines(cls):
@@ -1210,6 +1926,332 @@ def process_native_pdf(pdf_doc, layout_bounds, args, output_pdf_path):
 
     return "SUCCESS"
 
+# =========================================================================
+# 【261 版新增】倾斜角度的取值与净化
+# -------------------------------------------------------------------------
+# 背景：PaddleOCR 的 t0["rec_boxes"] 并不是检测出来的四边形，而是把四边形
+# 取 min/max 拍扁后的轴对齐矩形 [left, top, right, bottom]（见 paddlex 的
+# convert_points_to_boxes）——倾斜信息在这一步就被丢光了。258 版及以前那段
+# "isinstance(rec_box[0], (list, tuple, np.ndarray))" 的判断因此恒为 False，
+# text_angle 恒等于 0.0，整条倾斜处理链路从来没有被真正执行过。
+#
+# 真正带角度的四点框在 t0["rec_polys"] 里，与 rec_texts 一一对应、等长，
+# 点序为 [左上, 右上, 右下, 左下]（由 DBNet 后处理的 get_mini_boxes 保证，
+# box_type 默认 "quad" 恒为 4 点）。下面两个函数负责把它变成可用的角度。
+# =========================================================================
+
+# 【266 版】字身绕基线旋转 90 度后的横向跨度 / 字号。
+# 取值 = ascender - descender，china-ss 实测 1.043 - (-0.2656) = 1.3086。
+# 竖排用它把字号压到"不越出本列"，避免相邻子列的隐形文字互相重叠。
+VERT_GLYPH_SPAN = 1.3086
+
+
+# 死区：小于这个角度一律按 0 处理。
+# 这一条是"不破坏已跑通功能"的最强保证：标准扫描件的输出与 258 版完全相同。
+SKEW_DEAD_ZONE_DEG = 0.3
+
+
+def _sanitize_skew(angle, max_deg=30.0):
+    """
+    把一个原始倾角净化成"可以放心用"的角度。
+
+    两道闸：
+      1. 死区：|angle| < 0.3 度 -> 返回 0。正常扫描件不受任何影响。
+      2. 钳位：|angle| > max_deg -> 返回 0。这种框基本不是正常横排文字行，
+         而是竖排、印章、边缘噪点或误检的旁注；与其歪着写不如维持旧行为。
+    """
+    try:
+        a = float(angle)
+    except (TypeError, ValueError):
+        return 0.0
+    if a != a:                # NaN
+        return 0.0
+    if abs(a) < SKEW_DEAD_ZONE_DEG or abs(a) > float(max_deg):
+        return 0.0
+    return a
+
+
+def _is_vertical_box(poly):
+    """
+    这个检测框是不是"竖长"的？
+
+    竖排页面上并不是所有东西都竖着：书名、卷端题、版心的页码、天头的批注
+    往往是横排的，日文竖排书里也常有横排的标题行。整页一刀切按竖排写，
+    这些横的部分就会被拧成一列，反而比不支持竖排还糟。
+
+    所以竖排模式下逐框判断：框的"高"大于"宽"才按列处理，否则仍走横排。
+    用四边形的两条邻边长度比较，天然对倾斜的框也成立。
+    """
+    import math as _m
+    try:
+        w = _m.hypot(float(poly[1][0]) - float(poly[0][0]),
+                     float(poly[1][1]) - float(poly[0][1]))
+        h = _m.hypot(float(poly[3][0]) - float(poly[0][0]),
+                     float(poly[3][1]) - float(poly[0][1]))
+        return h > w
+    except (TypeError, ValueError, IndexError):
+        return False
+
+
+def _native_scan_dpi(pdf_doc, sample=6):
+    """
+    估算这本书的**扫描源**分辨率（DPI），取抽样页的中位数。
+
+    扫描件的信息量上限由内嵌图像的像素数决定，与我们渲染多大无关：
+    一张 736px 宽、页面 595pt 宽的图，源分辨率就是 736 / (595/72) = 89 DPI，
+    渲染到 2500px 也只是把这 89 DPI 的信息插值放大，不会凭空多出笔画。
+
+    这个数字用来决定要不要给竖排抬高检测输入上限：
+      · 268 DPI 的《古文舊書考》—— 上限 1600 已经够用，抬高反而让目录页的
+        连点引导线碎成更多框；
+      · 89 DPI 的《中庸章句集注》—— 上限 1600 会把双行小注的笔画压糊，
+        必须抬高（实测第 4 页 233 字 -> 810 字）。
+
+    取不到内嵌图像（矢量页、空白页）时返回 None，调用方按"不抬高"处理。
+    """
+    vals = []
+    n = pdf_doc.page_count
+    idx = range(n) if n <= sample else [n * (i + 1) // (sample + 1) for i in range(sample)]
+    for i in idx:
+        try:
+            page = pdf_doc.load_page(i)
+            w_pt = page.rect.width
+            if w_pt <= 1:
+                continue
+            for im in page.get_images(full=True):
+                px = im[2]
+                if px > 50:
+                    vals.append(px / (w_pt / 72.0))
+        except Exception:
+            continue
+    if not vals:
+        return None
+    vals.sort()
+    return vals[len(vals) // 2]
+
+
+def _extent_overlap(a0, a1, b0, b1):
+    """两个一维区间的重叠长度 / 较短者的长度。"""
+    lo, hi = max(a0, b0), min(a1, b1)
+    if hi <= lo:
+        return 0.0
+    return (hi - lo) / max(min(a1 - a0, b1 - b0), 1e-9)
+
+
+def _same_text_run(a, b, cross_ov=0.6, cross_ratio=0.6, along_ov=0.6, short_ratio=0.4):
+    """
+    【269 版】判断两个框是不是"同一段文字的两个版本"，用于多尺度并集去重。
+
+    这条规则要同时满足三件事，前两次尝试各挂在其中一条上：
+      A. 同一段文字在不同尺度下各出一个框   -> 必须去重，否则文字层重复写两遍
+      B. 长列里套着的短碎片（同一列）        -> 必须去重，碎片是长列的子集
+      C. 大字列框在几何上"包住"旁边的小注子列 -> **必须都保留**，那是两段不同的文字
+
+    第一次用 IoU 去重挂在 B（1 字框与 7 字列的 IoU 只有 0.14，判不出重复）；
+    第二次改用覆盖率去重挂在 C（小注子列 73% 落在大字列框内，被当成重复删掉，
+    正好把用户指出的那条子列删没了）。
+
+    本版分两步判：先判"是不是同一列"，再判"是不是同一段"。
+      · 同一列：短轴（竖排是 x）区间重叠 >= 窄者的 60%，**且**短轴长度之比 >= 0.6。
+        大字列宽 46pt 对小注子列宽 24pt，比值 0.52 < 0.6 -> 判为不同列，C 得解。
+      · 同一段：在此基础上长轴（竖排是 y）区间重叠 >= 短者的 60%。
+        1 字碎片完全落在 7 字列的 y 区间内，重叠 100% -> 判为重复，B 得解。
+
+    注意"上下相邻但不重叠"的两个框（例如「不」与「及之名庸平常也」，
+    合起来才是完整的「不及之名庸平常也」）长轴重叠为 0，不会被误删。
+    """
+    va = (a[3] - a[1]) >= (a[2] - a[0])
+    vb = (b[3] - b[1]) >= (b[2] - b[0])
+    if va != vb:
+        return False                       # 朝向不同，不是同一段
+    if va:
+        cross = _extent_overlap(a[0], a[2], b[0], b[2])
+        la, lb = a[2] - a[0], b[2] - b[0]
+        a_lo, a_hi, b_lo, b_hi = a[1], a[3], b[1], b[3]
+    else:
+        cross = _extent_overlap(a[1], a[3], b[1], b[3])
+        la, lb = a[3] - a[1], b[3] - b[1]
+        a_lo, a_hi, b_lo, b_hi = a[0], a[2], b[0], b[2]
+    along = _extent_overlap(a_lo, a_hi, b_lo, b_hi)
+    l_a, l_b = a_hi - a_lo, b_hi - b_lo
+    if cross < cross_ov:
+        return False
+    if min(la, lb) / max(la, lb, 1e-9) < cross_ratio:
+        return False
+    # 长轴长度悬殊时（一个是整列、另一个是碎片），改判"碎片中心是否落在整列区间内"。
+    # 只用 60% 区间重叠会漏掉骑在列首/列尾边界上的碎片 —— 它与整列的重叠不足六成，
+    # 却实实在在把同一个字又写了一遍。实测这条把重复率从 2.9% 压到接近 1%。
+    if min(l_a, l_b) / max(l_a, l_b, 1e-9) < short_ratio:
+        if l_a < l_b:
+            c = (a_lo + a_hi) / 2.0
+            return b_lo <= c <= b_hi
+        c = (b_lo + b_hi) / 2.0
+        return a_lo <= c <= a_hi
+    return along >= along_ov
+
+
+def _union_scale_runs(runs):
+    """
+    多尺度结果取并集。runs 里每一份是 [(box, poly, text, score), ...]，
+    box/poly 必须已经换算到同一坐标系（本脚本统一换算到基准尺度的像素）。
+    保留顺序按"字数多优先、其次分数高"，所以留下的总是信息量最大的那个框。
+    """
+    cand = [x for r in runs for x in r]
+    cand.sort(key=lambda x: (-len(x[2]), -x[3]))
+    kept = []
+    for box, poly, t, sc in cand:
+        if any(_same_text_run(box, k[0]) for k in kept):
+            continue
+        kept.append((box, poly, t, sc))
+    return kept
+
+
+def _page_is_vertical_body(items, min_cols=5, col_frac=0.55):
+    """
+    这一页是不是"竖排正文页"？
+
+    判据：拿得到四边形、且竖长的框，数量 >= min_cols 且占比 >= col_frac。
+    竖排书里夹的横排页（版权页、索引、中英文摘要）竖长框接近 0，判 False。
+    """
+    cols = rows = 0
+    for it in items:
+        poly = it[1]
+        if poly is None:
+            continue
+        if _is_vertical_box(poly):
+            cols += 1
+        else:
+            rows += 1
+    n_all = cols + rows
+    if n_all == 0:
+        return False
+    return cols >= min_cols and cols >= col_frac * n_all
+
+
+def _explode_cross_column_rows(items, min_cols=5, col_frac=0.55):
+    """
+    【265 版新增】把"跨列误并"的横长框按字数等分，拆回各自所属的列。
+
+    ---- 问题 ----
+    低分辨率的密排影印件上，相邻列**顶端**的字会被检测网络连成一个横长框。
+    例如《中庸章句集注》第 11 页的 "天人物以是哀"，其实是相邻六列各取了
+    第一个字；"敏成種則滅問右" 是七列各取一字。最坏的一页有 23/159 = 14%
+    的框是这样来的。
+
+    ---- 为什么不能简单丢掉 ----
+    这些字是**正文**，而且是每一列的首字；竖排列框恰恰是从它们下面才开始的，
+    所以丢掉就等于每列都缺字。实测把误并框叠在原图上看，蓝框确实压在
+    "天""人""物""以""是""哀"这六个字上，一个不差。
+
+    ---- 为什么可以按字数等分 ----
+    识别网络是**逐列各取一字、从左到右**读出来的，而且读得很准（这些框的
+    识别分数高达 0.98~1.00）。所以框里的第 i 个字，就属于框宽等分后的第 i 段。
+    等分同时还修掉了原来的累积漂移：旧写法按字体推进量逐字累加，与真实列距
+    对不上，一行下来末字能偏出半个字身；改成按框宽等分，误差不再累积。
+
+    ---- 已否决的其他思路（均有实测数据，见 CHANGELOG）----
+      · 按识别分数过滤：无效，误并框分数 0.98~1.00。
+      · 按与竖排列的重叠率过滤：无效，重叠率 0%~100% 全谱分布。
+      · 调低 unclip_ratio：无效，1.5→0.6 五档误并框数量恒定不变，
+        说明连通发生在 DB 的分割概率图里，不在后处理的框膨胀里。
+      · 整页转 90 度后再检测：更糟，误并 75 框 -> 266 框、字数还掉了三成，
+        因为侧倒的字形对**检测**网络同样是分布外输入。
+
+    ---- 安全闸 ----
+    只在"这一页确实以竖排列为主"时才拆（竖排列数 >= min_cols 且占比
+    >= col_frac）。竖排书里夹的横排页（版权页、索引、中英文摘要）竖排列数
+    接近 0，闸门不通过，整页原样放行，行为与 264 完全一致。
+    """
+    cols, rows = [], []
+    for it in items:
+        poly = it[1]
+        if poly is None or _is_vertical_box(poly):
+            cols.append(it)
+        else:
+            rows.append(it)
+    if not rows:
+        return items
+    if not _page_is_vertical_body(items, min_cols, col_frac):
+        return items          # 不是竖排正文页，原样放行
+
+    out = list(cols)
+    for rec_box, poly, text, score in rows:
+        n = len(text or "")
+        if n < 2:
+            # 单字横长框没有"跨列"可言，原样保留即可
+            out.append((rec_box, poly, text, score))
+            continue
+        p0, p1, p2, p3 = (np.asarray(q, dtype=float) for q in poly)
+        top, bot = p1 - p0, p2 - p3        # 上边、下边的方向向量
+        for i, ch in enumerate(text):
+            a, b = i / float(n), (i + 1) / float(n)
+            q0, q1 = p0 + top * a, p0 + top * b
+            q3, q2 = p3 + bot * a, p3 + bot * b
+            sub_poly = np.array([q0, q1, q2, q3], dtype=float)
+            xs, ys = sub_poly[:, 0], sub_poly[:, 1]
+            sub_box = np.array([xs.min(), ys.min(), xs.max(), ys.max()], dtype=float)
+            out.append((sub_box, sub_poly, ch, score))
+    return out
+
+
+def _skew_axis(poly, vertical=False):
+    """
+    取出一个检测框的"写入轴"：起点、终点。
+
+    横排：轴 = 左下 -> 右下（poly[3] -> poly[2]），即文字基线。
+    竖排：轴 = 左上 -> 左下（poly[0] -> poly[3]），即一列文字自上而下。
+
+    点序 [左上, 右上, 右下, 左下] 由 DBNet 后处理的 get_mini_boxes 保证。
+    注意竖排时千万不能沿用横排的那条轴：对一个竖长框来说 poly[3]->poly[2]
+    是底边那条**短边**，算出来的角度恒为 0 度，正是旧版把整列压成一小撮
+    横向糊斑的根源。
+    """
+    if vertical:
+        return poly[0], poly[3]
+    return poly[3], poly[2]
+
+
+def _estimate_page_skew(polys, texts, max_deg=30.0, vertical=False):
+    """
+    统计整页的系统性倾角（中位数），供短框借用。
+
+    为什么需要：只有两三个字的检测框（页码、章节号、脚注序号），四边形的
+    角度抖动能到好几度，逐框独立取角会让这些零星短行歪得各不相同，看着比
+    不校正还别扭。而整页的系统性倾斜是同一个值，用长框统计出来更稳。
+
+    只统计"够长"的框（至少 4 个字符、基线长度够），取中位数抗离群点。
+    有效样本不足 3 个时返回 None，调用方会退回"短框不校正"。
+    """
+    import math as _m
+    samples = []
+    for poly, txt in zip(polys, texts):
+        if poly is None or len(txt or "") < 4:
+            continue
+        try:
+            # 竖排页上混着的横长框（书名、卷端、页码）不参与竖排倾角统计
+            if vertical and not _is_vertical_box(poly):
+                continue
+            bl, br = _skew_axis(poly, vertical)
+            dx = float(br[0]) - float(bl[0])
+            dy = float(br[1]) - float(bl[1])
+            if _m.hypot(dx, dy) < 40:      # 轴太短的样本不参与统计
+                continue
+            # 竖排的基准角是 90 度（自上而下），统计的是"偏离垂直多少度"
+            base = 90.0 if vertical else 0.0
+            a = _m.degrees(_m.atan2(dy, dx)) - base
+            if abs(a) <= float(max_deg):
+                samples.append(a)
+        except (TypeError, ValueError, IndexError):
+            continue
+    if len(samples) < 3:
+        return None
+    samples.sort()
+    mid = len(samples) // 2
+    if len(samples) % 2:
+        return samples[mid]
+    return (samples[mid - 1] + samples[mid]) / 2.0
+
+
 def execute_ocr_and_render(pdf_doc, layout_bounds, args, input_pdf_path, output_pdf_path):
     """
     [阶段二独立模块]：正式全文档扫描、OCR 写入与防锁死保存
@@ -1246,7 +2288,12 @@ def execute_ocr_and_render(pdf_doc, layout_bounds, args, input_pdf_path, output_
     # 【改动】：向全局引擎请求对应语种的模型
     # 【256 版】：把检测输入上限交给引擎（跟随用户选的清晰度档位）
     AIModelEngine._det_limit_side_len = int(getattr(args, 'det_limit', 1600) or 0)
-    ocr = AIModelEngine.get_ocr_engine(args.lang)
+    AIModelEngine._det_thresh = getattr(args, 'det_thresh', None)
+    AIModelEngine._det_box_thresh = getattr(args, 'det_box_thresh', None)
+    ocr = AIModelEngine.get_ocr_engine(args.lang, getattr(args, 'vertical', False))
+    if getattr(args, 'vertical', False):
+        print("   └─ 竖排模式: 已关闭文本行方向分类器"
+              "（它会把转正后的竖排列误判为倒置，实测会吃掉三到七成正文）")
     if AIModelEngine._det_limit_side_len > 0:
         print(f"   └─ 文字检测输入上限: 长边 {AIModelEngine._det_limit_side_len} 像素"
               f"（限制检测网络的激活显存，不影响认字清晰度）")
@@ -1341,7 +2388,105 @@ def execute_ocr_and_render(pdf_doc, layout_bounds, args, input_pdf_path, output_
 
         # 调用引擎进行全图 OCR 识别（此时大模型看到的只有纯净的正文！）
         _t_mark = _time.perf_counter() if _timing_on else 0.0
-        text = ocr.predict(cim)
+
+        # ==========================================================
+        # 【269 版新增】多尺度深度扫描
+        # ----------------------------------------------------------
+        # 低清影印件上，双行夹注这类细密文字的检测**正好卡在 DB 分割图的
+        # 阈值线上**：实测同一条小注子列，渲染缩放差 0.66%（4.1667 对
+        # 4.1943）就能让一个 7 字框塌成 2 字框。也就是说"某个尺度恰好抓到、
+        # 换个尺度就抓不到"是常态，而不是偶然。
+        #
+        # 对策：同一页按几个相邻缩放各跑一遍，把结果并起来。实测三尺度并集
+        # （以《中庸章句集注》为例，指标取"落在 >=4 字框里的字数"，
+        # 碎片刷不动这个指标）：
+        #     第 4 页  最好单尺度 525 -> 并集 590
+        #     第11页  最好单尺度 483 -> 并集 570
+        #     第13页  最好单尺度 602 -> 并集 678
+        # 代价是耗时翻倍到三倍，所以默认关闭，由 --multi-scale 显式开启。
+        #
+        # 缩放系数刻意取得很近（0.86 / 1.00 / 1.06）：目的不是"看得更清楚"
+        # （源图分辨率摆在那儿，放大不会多出信息），而是让那些卡在阈值上的
+        # 连通区域在某一个尺度上恰好成形。所有尺度都受 4000 像素硬顶约束，
+        # 免得在 6GB 显卡上撑爆显存。
+        # ==========================================================
+        # 档位实测（《中庸章句集注》，指标为"落在 >=4 字框里的字数"）：
+        #            第4页   第11页  第13页
+        #   1 尺度     488     483     594
+        #   3 尺度     528     527     644
+        #   5 尺度     595     562     663
+        #   7 尺度     614     580     670
+        # 收益随尺度数单调上升、逐步收敛。系数刻意偏向 1.0 以下，
+        # 因为往上很快被 4000 像素硬顶截断，再加也是重复跑同一个缩放。
+        _MS_SETS = {
+            3: (1.0, 0.86, 1.06),
+            5: (1.0, 0.82, 0.90, 0.96, 1.06),
+            7: (1.0, 0.78, 0.84, 0.88, 0.93, 0.97, 1.06),
+        }
+        _ms_level = int(getattr(args, 'multi_scale', 1) or 1)
+        _ms_factors = _MS_SETS.get(_ms_level, (1.0,)) if _ms_level > 1 else (1.0,)
+
+        if len(_ms_factors) == 1:
+            text = ocr.predict(cim)
+        else:
+            _runs = []
+            _done_zooms = [zoom]
+            for _fi, _f in enumerate(_ms_factors):
+                if _fi == 0:
+                    _sub_im, _sub_zoom = cim, zoom
+                else:
+                    _z2 = clamp_zoom(max_side_points, target_dpi * _f, max_safe_pixels * _f)
+                    _z2 = max(0.3, _z2)
+                    # 与已跑过的任一缩放太接近就跳过：多个系数可能被 4000
+                    # 像素硬顶钳到同一个值，跑了也是白跑
+                    if any(abs(_z2 - _zd) / max(_zd, 1e-9) < 0.01 for _zd in _done_zooms):
+                        continue
+                    _p2 = page.get_pixmap(matrix=fitz.Matrix(_z2, _z2), alpha=False)
+                    _sub_im = np.ascontiguousarray(
+                        np.frombuffer(_p2.samples, dtype=np.uint8)
+                        .reshape(_p2.h, _p2.w, _p2.n)[..., [2, 1, 0]])
+                    _sub_zoom = _z2
+                    _done_zooms.append(_z2)
+                    del _p2
+                try:
+                    _r = ocr.predict(_sub_im)[0]
+                except Exception:
+                    _r = None
+                if _fi != 0:
+                    del _sub_im
+                if not _r:
+                    continue
+                # 统一换算到基准尺度的像素坐标
+                _k = zoom / _sub_zoom
+                _polys = _r.get("rec_polys") or []
+                _texts = _r.get("rec_texts") or []
+                _scores = _r.get("rec_scores") or []
+                _one = []
+                for _p, _t, _sc in zip(_polys, _texts, _scores):
+                    _pp = np.asarray(_p, dtype=float) * _k
+                    _xs, _ys = _pp[:, 0], _pp[:, 1]
+                    _one.append(((float(_xs.min()), float(_ys.min()),
+                                  float(_xs.max()), float(_ys.max())),
+                                 _pp, _t, float(_sc)))
+                _runs.append(_one)
+                if _fi != 0:
+                    try:
+                        import paddle
+                        if paddle.device.is_compiled_with_cuda():
+                            paddle.device.cuda.empty_cache()
+                    except Exception:
+                        pass
+            _merged = _union_scale_runs(_runs) if _runs else []
+            text = [{
+                "rec_polys": [m[1] for m in _merged],
+                "rec_boxes": np.array([m[0] for m in _merged], dtype=float)
+                             if _merged else np.array([]),
+                "rec_texts": [m[2] for m in _merged],
+                "rec_scores": [m[3] for m in _merged],
+            }]
+            if _timing_on:
+                print("      [诊断] 多尺度并集: %s -> %d 框"
+                      % ("+".join(str(len(r)) for r in _runs), len(_merged)))
         if _timing_on:
             _one_infer = _time.perf_counter() - _t_mark
             _tm["OCR 推理"] += _one_infer
@@ -1371,10 +2516,98 @@ def execute_ocr_and_render(pdf_doc, layout_bounds, args, input_pdf_path, output_
 
         _t_mark = _time.perf_counter() if _timing_on else 0.0
 
+        # ==========================================================
+        # 【261 版新增】并排取出带角度的四点框
+        # ----------------------------------------------------------
+        # rec_polys 与 rec_texts 一一对应、等长。取不到（旧版 Paddle、
+        # 非 general 的 text_type 等）就整列填 None，下面每一处都会原样
+        # 退回 258 版的水平写入逻辑，行为完全不变。
+        #
+        # page.rotation != 0 的页面整体不做倾斜校正：那些页面走的是下方
+        # 的逐字符老通道，而老通道表达不了"基线倾斜"（详见写入处的说明）。
+        # ==========================================================
+        # 【262 版】竖排必须由用户显式勾选，绝不自动判断。
+        # 竖排模式下即便勾了 --no-skew 也仍要走带角度的写入通道 —— 因为
+        # "竖排"本身就是一个 90 度的角度，关掉它就没法写了；--no-skew 在
+        # 竖排模式下只表示"不再额外校正列的微小倾斜"。
+        _vertical = bool(getattr(args, 'vertical', False))
+        _skew_on = ((not getattr(args, 'no_skew', False)) or _vertical) and page.rotation == 0
+        _skew_max = float(getattr(args, 'skew_max', 30.0) or 30.0)
+        _polys = None
+        if _skew_on:
+            try:
+                _cand = t0.get("rec_polys")
+                if _cand is not None and len(_cand) == len(t0["rec_texts"]):
+                    _polys = list(_cand)
+            except (AttributeError, TypeError, KeyError):
+                _polys = None
+        if _polys is None:
+            _polys = [None] * len(t0["rec_texts"])
+            _page_skew = None
+        else:
+            _page_skew = _estimate_page_skew(_polys, t0["rec_texts"], _skew_max, _vertical)
+
+        # ==========================================================
+        # 【262 版新增】竖排列序重排：自右向左
+        # ----------------------------------------------------------
+        # PaddleOCR 的 SortQuadBoxes 是 sorted(key=(左上y, 左上x))，即
+        # "从上到下、从左到右"。竖排页面上所有列的顶端 y 几乎相同，于是
+        # 排序退化成纯粹的"从左到右"—— 而竖排排印物都是自右向左读。
+        # 不重排的话，写进 PDF 的文字顺序是整段倒序的，复制粘贴、Ctrl+F
+        # 跨列检索全都会错乱（每一列内部的字序是对的，列与列之间是反的）。
+        # 这里按框中心 x 降序重排，纯粹是调换遍历顺序，不改任何几何量。
+        # ==========================================================
+        _items = list(zip(t0["rec_boxes"], _polys, t0["rec_texts"], t0["rec_scores"]))
+        _force_vert = False          # 非竖排模式恒为 False，逐框判断照旧
+        if _vertical:
+            # 【265 版】先把跨列误并的横长框拆回各列，再排列序。
+            # 顺序不能反：拆出来的单字必须参与自右向左的列序排序。
+            _n_before = len(_items)
+            _items = _explode_cross_column_rows(_items)
+
+            # 【269 版】多尺度时要在 explode **之后**再去一次重。
+            # 并集是在 explode 之前做的，而 explode 会把跨列误并块拆成一批
+            # 单字框 —— 这些新生成的框没参与过并集去重，很容易和另一个尺度
+            # 直接检出的单字框撞在同一个位置，把同一个字写两遍。
+            # 实测第 4 页 65 处重复里，绝大多数正是这种"单字撞单字"。
+            if int(getattr(args, 'multi_scale', 1) or 1) > 1:
+                _n_ex = len(_items)
+                _items = _union_scale_runs([_items])
+                if _n_ex != len(_items) and getattr(args, 'timing', False):
+                    print("      [诊断] 拆分后二次去重: %d -> %d 框" % (_n_ex, len(_items)))
+            if len(_items) != _n_before and getattr(args, 'timing', False):
+                print("      [诊断] 跨列误并拆分: %d 框 -> %d 框"
+                      % (_n_before, len(_items)))
+
+            def _col_key(it):
+                b = it[0]
+                try:
+                    return -(float(b[0]) + float(b[2])) / 2.0
+                except (TypeError, ValueError, IndexError):
+                    return 0.0
+            _items.sort(key=_col_key)
+
+            # ==================================================
+            # 【267 版新增】竖排正文页上一律按竖排写入
+            # --------------------------------------------------
+            # 262 版是逐框按长宽比判朝向，本意是照顾竖排页上真实的横排
+            # 书名、卷端题和页码。但实测下来，竖排正文页上被判成"横排"的
+            # 框绝大多数并不是真的横排文字，而是检测网络的误判 —— 密排
+            # 密排件里相邻列的字很容易被连成一个横长块。把它们当横排写，
+            # 文字层就横着盖在竖排正文上，位置和阅读顺序全错。
+            #
+            # 权衡下来：宁可把真正的横排书名、页码也按竖排写（那些内容
+            # 通常只有两三个字，按竖排写位置依然落在字上，只是选中顺序
+            # 变成自上而下），也不能让误判的横长块污染正文区。正文的准确
+            # 性优先级远高于书名页码。
+            #
+            # 只在"这一页确实以竖排列为主"时生效；竖排书里夹的横排页
+            # （版权页、索引）判定不通过，整页仍按原逻辑逐框判断。
+            # ==================================================
+            _force_vert = _page_is_vertical_body(_items)
+
         # 遍历全页所有识别出的文字框
-        for rec_box, rec_text, rec_score in zip(
-            t0["rec_boxes"], t0["rec_texts"], t0["rec_scores"]
-        ):
+        for rec_box, rec_poly, rec_text, rec_score in _items:
             # ==========================================================
             # 【终极修正 4】：精准锚定真实起点与计算文本矢量角度
             # ==========================================================
@@ -1397,6 +2630,51 @@ def execute_ocr_and_render(pdf_doc, layout_bounds, args, input_pdf_path, output_
                 x_min, y_min, x_max, y_max = rec_box[:4]
                 pt_bl = [x_min, y_max]
                 text_angle = 0.0
+
+            # ==========================================================
+            # 【261 版新增】用真实四边形改写锚点、倾角与基线长度
+            # ----------------------------------------------------------
+            # 上面那段 if/else 是 258 版原样保留的，走的必然是 else 分支
+            # （rec_boxes 是轴对齐矩形，原因见文件上方 _sanitize_skew 处的
+            # 说明）。这里在它之后做一次覆盖：只有拿到了四边形、且净化后的
+            # 角度非 0 时才改写，否则一个变量都不碰，输出与 258 版完全相同。
+            #
+            # 锚点必须一起换：旧的 pt_bl = [x_min, y_max] 是**外接框**的左下
+            # 角，倾斜行的真实基线起点并不在那里 —— 右端上扬的行，真实左下角
+            # 比 y_max 高出整整 L·sinθ，照旧锚点写会让整行下沉。
+            # ==========================================================
+            skew_len = None      # 写入轴的真实长度(图像像素)；None = 沿用外接框宽
+            col_w = None         # 【262】竖排时的列宽(图像像素)，用于把基线摆到列心
+            # 【262 版】本框到底按竖排还是横排写：竖排模式下也要逐框判断，
+            # 因为竖排页上的书名、卷端、页码、天头批注常常是横排的。
+            _box_vert = bool(_vertical and rec_poly is not None
+                             and (_force_vert or _is_vertical_box(rec_poly)))
+            if rec_poly is not None:
+                try:
+                    # 【262 版】横排取基线（左下->右下），竖排取列轴（左上->左下）
+                    p_bl, p_br = _skew_axis(rec_poly, _box_vert)
+                    _dx = float(p_br[0]) - float(p_bl[0])
+                    _dy = float(p_br[1]) - float(p_bl[1])
+                    # 竖排的基准角是 90 度；死区与钳位只作用在"偏离基准多少"上，
+                    # 于是 89.8 度的列会被归正成 90 度，93 度的斜列则保留 3 度倾斜。
+                    _base_ang = 90.0 if _box_vert else 0.0
+                    _dev = math.degrees(math.atan2(_dy, _dx)) - _base_ang
+                    # 不足 4 个字的短框角度噪声大，借用整页基准偏离量
+                    if len(rec_text) < 4 and _page_skew is not None:
+                        _dev = _page_skew
+                    _ang = _base_ang + _sanitize_skew(_dev, _skew_max)
+                    if _box_vert or _ang != 0.0:
+                        text_angle = _ang
+                        pt_bl = [float(p_bl[0]), float(p_bl[1])]
+                        skew_len = math.hypot(_dx, _dy)
+                        if _box_vert:
+                            # 列宽 = 左上到右上的距离
+                            col_w = math.hypot(
+                                float(rec_poly[1][0]) - float(rec_poly[0][0]),
+                                float(rec_poly[1][1]) - float(rec_poly[0][1]))
+                except (TypeError, ValueError, IndexError):
+                    skew_len = None
+                    col_w = None
 
             # 保持之前的绝对物理映射坐标（完全正确，无需回滚）
             true_page_w = pix.w / zoom
@@ -1441,6 +2719,10 @@ def execute_ocr_and_render(pdf_doc, layout_bounds, args, input_pdf_path, output_
             cn_punctuation = set("，。、；：？！“”‘’（）《》〈〉【】『』—…")
 
             # 2. 逐字符测算物理长度 (针对标点启用 50% 折半测算)
+            #
+            # 【262 版】竖排不走这套测算：竖排每个字都占满一个全角字身，
+            # 无论汉字、西文还是标点，纵向推进量恒为一个字号。所以"1 号字下
+            # 整列的长度"就等于字数本身。
             total_length_1 = 0
             for char in rec_text:
                 is_ascii = char.isascii()
@@ -1454,7 +2736,72 @@ def execute_ocr_and_render(pdf_doc, layout_bounds, args, input_pdf_path, output_
                 total_length_1 += char_len
 
             # 3. 计算完美贴合 OCR 识别框的统一缩放字号
-            fs = R.width / total_length_1 if total_length_1 > 0 else 1
+            #
+            # 【261 版修正】倾斜行必须用真实基线长度，不能用 R.width。
+            # R 是**轴对齐**外接框，对倾角 θ、行高 h、基线长 L 的斜行，
+            # R.width = L·cosθ + h·sinθ，比真实的 L 虚胖。长行误差可忽略，
+            # 短行非常明显：θ=10°、h=30、L=50 的两字页码会胖出约 9%，
+            # 照它算字号会把整行顶出识别框。
+            if _box_vert and skew_len is not None:
+                # 【262 版】竖排：字距 = 列长 ÷ 字数
+                _base_w = skew_len / zoom
+                _units = float(len(rec_text))
+            else:
+                _base_w = R.width if skew_len is None else (skew_len / zoom)
+                _units = total_length_1
+            fs = _base_w / _units if _units > 0 else 1
+
+            # ==========================================================
+            # 【266 版核心修正】竖排把"字距"与"字号"解耦
+            # ----------------------------------------------------------
+            # 262~265 版让同一个 fs 同时承担两件事：既当**字号**（画多大），
+            # 又当**字距**（下一个字往下挪多远）。横排里这两者本来就相等，
+            # 所以一直没出问题；竖排里它们是两个独立的量，绑死就会出事。
+            #
+            # 《中庸章句集注》这类经注合刻本最能暴露：实测全页真实字距恒为
+            # 22~24pt（自相关扫描 64 个窄条，没有第二个峰），也就是说小注
+            # 与大字的**行距是一样的**，小注只是**字形更小、列更窄**。于是：
+            #
+            #   · 字距 = 列长 ÷ 字数 = 22pt  —— 正确，位置就该这么排
+            #   · 字号 若也取 22pt         —— 错误。字身绕基线旋转 -90 度后，
+            #     横向跨度是 (ascender-descender) x 字号 ≈ 1.31 x 22 = 29pt，
+            #     而小注子列只有 16pt 宽，左右各溢出 6.5pt 直接压进相邻子列。
+            #     阅读器里选一列会连带选中隔壁，Ctrl+F 高亮也落在错的地方。
+            #
+            # 所以本版分开算：
+            #   _pitch = 列长 ÷ 字数        -> 逐字推移量，保持不变
+            #   fs     = min(_pitch, 列宽 / 1.31)  -> 字身，保证不越出本列
+            #
+            # 1.31 就是 (ascender - descender)，即字身横向跨度与字号的比值，
+            # 直接从字体度量里取，不是拍脑袋的经验值。
+            #
+            # 对大字列没有任何影响：大字列宽 45pt、字距 23pt，
+            # 45/1.31 = 34pt > 23pt，min 取的仍是字距，与 265 版完全一致。
+            # 顺带把 262 版那条"长列少字"的上限也一并覆盖了（目录连点引导线
+            # 那种 171pt 的字号，会被 列宽/1.31 直接压回正常尺寸）。
+            # ==========================================================
+            _pitch = fs          # 竖排的逐字推移量；横排下方不会用到
+            if _box_vert and col_w:
+                _fs_fit = (col_w / zoom) / VERT_GLYPH_SPAN
+                if fs > _fs_fit:
+                    fs = _fs_fit
+
+            # ==========================================================
+            # 【262 版新增】把竖排的基线摆到列的正中央
+            # ----------------------------------------------------------
+            # 写入轴取的是列的左上角，而字身并不是以基线为中心的：绕轴旋转
+            # -90 度之后，字身在页面 +x 方向上从 基线-descender 伸到
+            # 基线+ascender，中心落在 基线 + (asc+desc)/2 * 字号 处
+            # （china-ss 实测 0.3887 em）。直接拿左上角当基线，整列文字会
+            # 偏向列的左侧。这里把基线沿垂直于写入轴的方向推到列心。
+            # ==========================================================
+            if _box_vert and skew_len is not None and col_w:
+                _u_len = math.hypot(_dx, _dy) or 1.0
+                _ux, _uy = _dx / _u_len, _dy / _u_len       # 写入轴单位向量
+                _px, _py = _uy, -_ux                        # 字身伸展方向
+                _mid = (font_cn.ascender + font_cn.descender) / 2.0
+                _shift = (col_w / 2.0) - _mid * fs * zoom   # 单位：图像像素
+                pt_bl = [pt_bl[0] + _px * _shift, pt_bl[1] + _py * _shift]
 
             # ==========================================================
             # 【本版本新增：高速写入通道 (TextWriter)】
@@ -1483,7 +2830,24 @@ def execute_ocr_and_render(pdf_doc, layout_bounds, args, input_pdf_path, output_
             box_morph_angle = page.rotation - text_angle
             fast_write_done = False
 
-            if (not getattr(args, 'legacy_text', False)) and abs(box_morph_angle) < 1e-6:
+            # ==========================================================
+            # 【261 版修改】门槛由"角度必须为 0"放宽为"页面自身未旋转"
+            # ----------------------------------------------------------
+            # 258 版这里 text_angle 恒为 0，所以 abs(page.rotation - text_angle)
+            # < 1e-6 的实际含义就是 page.rotation == 0；改成显式判断后语义
+            # 完全一致，区别只是现在 text_angle 可以非 0 了。
+            #
+            # 关键点：TextWriter.write_text() 本身就支持 morph 参数，可以把
+            # 整框攒好的字符**一次性**带角度写入，所以倾斜页依然走高速通道，
+            # 绝不会掉回下面那条随字数平方增长的逐字符慢速老路。
+            #
+            # 页面自身带旋转（page.rotation != 0）的仍然原样走老通道 —— 那条
+            # 路径每个字符各自绕自身原点旋转、而推移量只加在水平方向上，天然
+            # 只能表达"整页旋转"，表达不了"基线倾斜"；硬塞角度进去会变成每个
+            # 字歪着、整行却还是平的。所以倾斜校正在上面就已经对旋转页整体
+            # 关闭了（_skew_on 里的 page.rotation == 0）。
+            # ==========================================================
+            if (not getattr(args, 'legacy_text', False)) and page.rotation == 0:
                 try:
                     tw = fitz.TextWriter(page.rect)
                     tw_pure = fitz.TextWriter(new_page.rect) if (args.pure and new_page is not None) else None
@@ -1504,24 +2868,58 @@ def execute_ocr_and_render(pdf_doc, layout_bounds, args, input_pdf_path, output_
                                            char, font=f_obj, fontsize=fs)
 
                         # 推移量与下方原有算法逐字一致（标点仍然只前进半格）
-                        char_w = f_obj.text_length(char, fontsize=fs)
-                        if char in cn_punctuation:
-                            char_w *= 0.5
+                        # 【262 版】竖排恒为一个全角字身，标点也不压半宽
+                        # 【266 版】用 _pitch 而不是 fs：字号可能已被列宽压小，
+                        # 但字与字之间的距离必须保持真实字距，否则整列会缩短。
+                        if _box_vert:
+                            char_w = _pitch
+                        else:
+                            char_w = f_obj.text_length(char, fontsize=fs)
+                            if char in cn_punctuation:
+                                char_w *= 0.5
                         fast_offset += char_w
+
+                    # ==================================================
+                    # 【261 版新增】整框一次性带角度写入
+                    # --------------------------------------------------
+                    # morph = (支点, 矩阵)。支点取这一行基线的真实起点；矩阵
+                    # 取 fitz.Matrix(-text_angle)：图像坐标系 y 轴向下，
+                    # text_angle = atan2(dy, dx) 为正表示右端下沉，而
+                    # fitz.Matrix(+θ) 在页面上是逆时针（右端上扬），故取负号。
+                    # 这与下方老通道 morph_angle = page.rotation - text_angle
+                    # 的符号约定完全一致。
+                    #
+                    # 实测(PyMuPDF 1.27.2)：这样写入后提取的文本顺序完全正常，
+                    # 且提取出的 line["dir"] 精确等于倾斜方向，说明阅读器的
+                    # 选中高亮框会跟着一起倾斜，复制、Ctrl+F 全部照常。
+                    # ==================================================
+                    skew_morph = None
+                    skew_morph_pure = None
+                    if abs(text_angle) > 1e-9:
+                        _pivot = fitz.Point(true_x0 + (pt_bl[0] / zoom),
+                                            true_y0 + (pt_bl[1] / zoom)) * page.derotation_matrix
+                        skew_morph = (_pivot, fitz.Matrix(-text_angle))
+                        skew_morph_pure = (fitz.Point(pt_bl[0] / zoom, pt_bl[1] / zoom),
+                                           fitz.Matrix(-text_angle))
 
                     if args.debug:
                         tw.write_text(page, render_mode=0,
-                                      color=colorsys.hsv_to_rgb(rec_score / 2, 1, 1))
+                                      color=colorsys.hsv_to_rgb(rec_score / 2, 1, 1),
+                                      morph=skew_morph)
                     else:
-                        tw.write_text(page, render_mode=3)
+                        tw.write_text(page, render_mode=3, morph=skew_morph)
 
                     if tw_pure is not None:
-                        tw_pure.write_text(new_page, render_mode=0)
+                        tw_pure.write_text(new_page, render_mode=0, morph=skew_morph_pure)
 
                     fast_write_done = True
                 except Exception:
-                    # 任何异常都不影响结果：直接落回下方久经考验的逐字符通道
+                    # 任何异常都不影响结果：直接落回下方久经考验的逐字符通道。
+                    # 【261 版】落回前必须把倾角清零：老通道表达不了基线倾斜
+                    # （原因见上面那段说明），带着角度进去会变成每个字歪着、
+                    # 整行却还是平的。清零后就是 258 版的行为，安全兜底。
                     fast_write_done = False
+                    text_angle = 0.0
 
             if fast_write_done:
                 continue
@@ -1592,9 +2990,14 @@ def execute_ocr_and_render(pdf_doc, layout_bounds, args, input_pdf_path, output_
                     )
 
                 # 累加当前字符的真实渲染宽度，作为下一个字的起点
-                char_w = f_obj.text_length(char, fontsize=fs)
-                if is_punc:
-                    char_w *= 0.5  # 下一个字符的起点也会跟着向左平移，消除空隙
+                # 【262 版】竖排恒为一个全角字身，标点也不压半宽
+                # 【266 版】推移量用真实字距 _pitch，与字号解耦
+                if _box_vert:
+                    char_w = _pitch
+                else:
+                    char_w = f_obj.text_length(char, fontsize=fs)
+                    if is_punc:
+                        char_w *= 0.5  # 下一个字符的起点也会跟着向左平移，消除空隙
                 current_x_offset += char_w
 
         if _timing_on:
@@ -1808,8 +3211,91 @@ def process_pdf(input_pdf_path, output_pdf_path):
     import fitz
     global args  # 确保能读取到 GUI/CLI 解析的全局配置
 
+    # ==========================================================
+    # 【262 版新增】竖排模式自动等效于 -S（跳过版面分析）
+    # ----------------------------------------------------------
+    # analyze_smart_layout 拟合天头地脚用的是横排文字行的统计规律：
+    # 它假设"正文由许多条又宽又矮的横行密集堆叠而成"。竖排页面上每一列
+    # 都是又窄又高、且几乎贯穿整个版心，这套统计完全失效，最坏的情况是
+    # 把整列判成页眉页脚而整列丢弃 —— 正是"十列只出来三列"这类现象的
+    # 一个可能来源。在拿到更多竖排样张调准竖排版面分析之前，这里直接
+    # 关掉拦截器，宁可多识别边框和书耳，也绝不丢正文。
+    # ==========================================================
+    if getattr(args, 'vertical', False) and not getattr(args, 'skip_layout', False):
+        args.skip_layout = True
+        print("   [!] 竖排模式已开启 -> 自动跳过智能版面分析（等效 -S），避免整列正文被误判为页眉页脚。")
+
+
     # 打开源 PDF 文件
     pdf_doc = fitz.open(input_pdf_path)
+
+    # ==========================================================
+    # 【266 版新增】低分辨率竖排扫描件自动抬高检测输入上限
+    # ----------------------------------------------------------
+    # 前三档的检测上限（1280/1600/2000）是按横排现代印刷品标定的。竖排书
+    # 里有一类很吃亏：扫描源分辨率本来就低、字小、还带双行小注，检测输入
+    # 再被压到 1600，小注的笔画就彻底糊了。
+    #
+    # 但这**不是**所有竖排书的问题，所以不能对竖排一刀切抬高。两本实测：
+    #
+    #   《中庸章句集注》 源 89 DPI  det1600 -> 第4页 233 字
+    #                              det2800 -> 第4页 810 字   （必须抬）
+    #   《古文舊書考》   源 268 DPI det1600 -> 全书覆盖率 96%
+    #                              det2800 -> 全书 95%，目录页 85%->72%
+    #                                         （抬了反而碎，不该抬）
+    #
+    # 判据就取扫描源的原始分辨率：低于 150 DPI 才抬。这直接对应"源图本来
+    # 就没多少像素，再降采样就没笔画了"这件事，而不是拍一个经验阈值。
+    #
+    # 2800 这个值来自显存曲线的拐点（RTX 3060 实测峰值 2853MB，
+    # 而"完全不限"要 5489MB，会吃掉一张 6GB 卡的几乎全部显存）。
+    #
+    # 用户在命令行显式写了 --det-limit 就完全听用户的，一个字不改。
+    # ==========================================================
+    # 【268 版修正】必须整档提升，只抬 det_limit 没用
+    # ----------------------------------------------------------
+    # 266 版只抬了 det_limit，但检测网络的实际输入是
+    # min(渲染像素, det_limit) —— 默认档渲染长边只有 2500，det 上限抬到
+    # 2800 完全不起作用，等于白抬。实测第 4 页那条小注子列：
+    #   渲染 2500px -> 检测根本框不出来
+    #   渲染 3775px -> 框出 7 字 '及之名庸年常也'（真值「及之名庸平常也」）
+    # 所以低分辨率竖排件要整档提升：渲染分辨率和检测上限一起上。
+    _VERT_DET_FLOOR = 2800
+    _VERT_DPI_FLOOR = 300.0
+    _VERT_PX_FLOOR = 3800.0
+    _LOWRES_DPI = 150.0
+    _auto = (getattr(args, 'vertical', False)
+             and not getattr(args, '_res_explicit', False))
+    if _auto:
+        _dpi = _native_scan_dpi(pdf_doc)
+        if _dpi is not None and _dpi < _LOWRES_DPI:
+            _o_dpi = float(getattr(args, 'target_dpi', 220.0) or 220.0)
+            _o_px = float(getattr(args, 'max_pixels', 2500.0) or 2500.0)
+            _o_det = int(getattr(args, 'det_limit', 0) or 0)
+            args.target_dpi = max(_o_dpi, _VERT_DPI_FLOOR)
+            args.max_pixels = max(_o_px, _VERT_PX_FLOOR)
+            if 0 < _o_det < _VERT_DET_FLOOR:
+                args.det_limit = _VERT_DET_FLOOR
+            # 【270 版】同时放宽 DB 的两个阈值。低分辨率影印件的笔画本来就淡，
+            # 默认 thresh=0.3 / box_thresh=0.6 会把大量细密小注整块滤掉。
+            # 实测（《中庸章句集注》第4/11页，指标为检测框对墨迹的覆盖率）：
+            #   thresh 0.3 / box 0.6（默认）-> 93.7% / 84.8%
+            #   thresh 0.2 / box 0.4        -> 99.8% / 99.9%
+            # 对 268 DPI 的《古文舊書考》不启用（那本判定为分辨率充足）。
+            if getattr(args, 'det_thresh', None) is None:
+                args.det_thresh = 0.2
+            if getattr(args, 'det_box_thresh', None) is None:
+                args.det_box_thresh = 0.4
+            print("   [!] 扫描源仅约 %.0f DPI（低于 %.0f）-> 自动切到 300 DPI 强化检测档。"
+                  % (_dpi, _LOWRES_DPI))
+            print("       DB 检测阈值同步放宽为 thresh=%.2f / box_thresh=%.2f（检测端墨迹覆盖 94%% -> 99%%）。"
+                  % (args.det_thresh, args.det_box_thresh))
+            print("       渲染 %.0fDPI/%.0fpx -> %.0fDPI/%.0fpx，检测上限 %d -> %d。"
+                  % (_o_dpi, _o_px, args.target_dpi, args.max_pixels, _o_det, args.det_limit))
+            print("       低分辨率影印件的密排小字笔画很细，渲染或检测上限过低都会把它压糊；")
+            print("       如需沿用原值请显式指定 --dpi / --max-pixels / --det-limit。")
+        elif _dpi is not None:
+            print("   └─ 扫描源约 %.0f DPI，分辨率充足，维持当前清晰度档位。" % _dpi)
 
     # ==========================================================
     # 【改动逻辑】：根据开关状态分流，并拦截非法输入
@@ -2009,13 +3495,27 @@ import threading
 
 # --- 新增：轻量级鼠标悬停提示 (Tooltip) 控件 ---
 class ToolTip:
-    def __init__(self, widget):
+    # 【273 版】原来只能先构造、再另行给 .text 赋值，且只绑定控件自身。
+    # 顶部控件行要给一个静态标签挂长说明，容器里还套着子控件，
+    # 于是补两件事：构造时可直接传 text；deep=True 时连同所有后代一起绑定
+    # （鼠标从父控件移到子控件会触发父控件的 <Leave>，不一起绑就会闪）。
+    def __init__(self, widget, text="", deep=False):
         self.widget = widget
         self.tipwindow = None
         self.id = None
-        self.text = ""
-        self.widget.bind("<Enter>", self.enter)
-        self.widget.bind("<Leave>", self.leave)
+        self.text = text
+        self._bind(widget)
+        if deep:
+            self._bind_children(widget)
+
+    def _bind(self, w):
+        w.bind("<Enter>", self.enter, add="+")
+        w.bind("<Leave>", self.leave, add="+")
+
+    def _bind_children(self, w):
+        for ch in w.winfo_children():
+            self._bind(ch)
+            self._bind_children(ch)
 
     def enter(self, event=None):
         self.schedule()
@@ -2035,17 +3535,21 @@ class ToolTip:
 
     def showtip(self, event=None):
         if not self.text: return
-        x, y, cx, cy = self.widget.bbox("insert")
-        x += self.widget.winfo_rootx() + 25
-        y += self.widget.winfo_rooty() + 20
+        # 【273 版】原来用 self.widget.bbox("insert") 取偏移。它在 Label 上
+        # 虽然不报错（Misc.bbox 实为 grid_bbox，返回 0），但语义上是给
+        # Entry/Text 用的，对普通控件毫无意义。改成直接贴控件左下角。
+        x = self.widget.winfo_rootx() + 8
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
         self.tipwindow = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True) # 去除系统窗口边框
         tw.wm_geometry("+%d+%d" % (x, y))
 
-        # 【修改配色】：改为高辨识度的护眼明亮模式 (白底深灰字)
-        label = tk.Label(tw, text=self.text, justify="left",
-                      background="#FFFFFF", foreground="#333333", relief="solid", borderwidth=1,
-                      font=("微软雅黑", 8))
+        # 【273 版】配色与高级面板的悬停提示统一为深色浮层，
+        # 免得同一个软件里出现两种风格的气泡。
+        label = tk.Label(tw, text=self.text, justify="left", anchor="w",
+                         background="#2B2B2B", foreground="#F2F2F2",
+                         relief="solid", borderwidth=1,
+                         wraplength=360, font=("微软雅黑", 9))
         label.pack(ipadx=6, ipady=4)
 
     def hidetip(self):
@@ -2188,7 +3692,14 @@ class PDFOCRApp:
         self.var_lang.set(self.lang_cb['values'][0])
 
         # 将提示小字紧贴在语言菜单右侧，作为附属说明
-        tk.Label(left_config, text="*小语种支持手动键入，参考Paddle官方识别手册", font=("微软雅黑", 8), bg="#FFFFFF", fg="#AAAAAA").pack(side="left")
+        # 【273 版】原标签宽 287px，把整行的宽度需求撑过窗口宽，pack 于是
+        # 从末尾开始压，「完成时自动打开」只分到 92px（需要 180px）。
+        # 长说明挪进悬停提示，行内只留短标签。
+        _lang_hint = tk.Label(left_config, text="*可手动键入", font=("微软雅黑", 8),
+                              bg="#FFFFFF", fg="#AAAAAA")
+        _lang_hint.pack(side="left")
+        ToolTip(_lang_hint, "下拉框里没有的小语种，可以直接手动键入语种代码，"
+                            "取值参考 PaddleOCR 官方识别手册（如 japan、korean、latin 等）。")
 
         # --- [新增] 中间视觉分隔符 (利用 expand=True 实现动态居中悬浮) ---
         tk.Label(config_frame, text=" | ", font=("Arial", 10), bg="#FFFFFF", fg="#DDDDDD").pack(side="left", expand=True)
@@ -2197,11 +3708,14 @@ class PDFOCRApp:
         tk.Label(right_config, text="◧ 扫描清晰度:", font=("微软雅黑", 9, "bold"), bg="#FFFFFF", fg="#333333").pack(side="left")
 
         self.var_dpi = tk.StringVar()
-        self.dpi_cb = ttk.Combobox(right_config, textvariable=self.var_dpi, font=("微软雅黑", 9), width=16)
+        self.dpi_cb = ttk.Combobox(right_config, textvariable=self.var_dpi, font=("微软雅黑", 9), width=20)
+        # 【272 版】档位改为写明实际渲染 DPI 与显存需求。
+        # 显存为 RTX 3060 上对 595x906pt 页面的实测峰值，页面越大越高。
         self.dpi_cb['values'] = [
-            "150 DPI (极速)",
-            "220 DPI (适中/默认)",
-            "300 DPI (缓慢/高精)"
+            "150 DPI 极速 (显存 0.7GB)",
+            "220 DPI 默认 (显存 1.0GB)",
+            "300 DPI 高精 (显存 1.5GB)",
+            "300 DPI 强化检测 (显存 2.8GB)"
         ]
         # 右侧无需外边距，直接贴紧窗口右边缘
         self.dpi_cb.pack(side="left", padx=(8, 0))
@@ -2229,7 +3743,13 @@ class PDFOCRApp:
         self.entry_pages = tk.Entry(ctrl_frame, textvariable=self.var_pages, font=("Arial", 9), width=10, relief="solid", bd=1, state="disabled", disabledbackground="#F0F0F0")
         self.entry_pages.pack(side="left", padx=8)
 
-        tk.Label(ctrl_frame, text="请先勾选，再输入绝对页码。格式: 5 或 5-10", font=("微软雅黑", 8), bg="#FFFFFF", fg="#999999").pack(side="left")
+        # 【273 版】同上，原标签宽 267px，长说明改为悬停浮出。
+        _pg_hint = tk.Label(ctrl_frame, text="格式: 5 或 5-10", font=("微软雅黑", 8),
+                            bg="#FFFFFF", fg="#999999")
+        _pg_hint.pack(side="left")
+        ToolTip(_pg_hint, "先勾选左侧方框，再填页码，否则该输入框不生效。\n"
+                          "填绝对页码（从 1 开始数的物理页），可以是单页 5，也可以是范围 5-10。\n"
+                          "若同时开启了双联页拆分，页码按拆分前的物理页计算。")
 
         # 页码联动控制函数
         def toggle_page_entry(*args):
@@ -2355,13 +3875,98 @@ class PDFOCRApp:
         self.var_skip_layout = tk.BooleanVar(value=False)
         self.var_split_double = tk.BooleanVar(value=False)   # 【新增】双联页拆分开关
         self.var_timing = tk.BooleanVar(value=False)         # 【新增】分段计时诊断开关
+        # 【261 版新增】倾斜校正默认开启，这个开关是"关掉它"，所以默认 False
+        self.var_no_skew = tk.BooleanVar(value=False)
+        # 【262 版新增】竖排文本，必须用户显式勾选，默认关闭
+        self.var_vertical = tk.BooleanVar(value=False)
+        # 【269 版新增】多尺度深度扫描，耗时翻倍，默认关闭
+        self.var_multi_scale = tk.BooleanVar(value=False)
 
-        def create_option(parent, row, col, var, title, desc):
+        # ==============================================================
+        # 【271 版新增】悬停提示
+        # --------------------------------------------------------------
+        # 界面上只留两行短说明，完整解释（为什么要有这个开关、什么时候该用、
+        # 代价是什么）改为鼠标悬停时浮出。这样既不牺牲信息量，又不会让面板
+        # 变成一堵密密麻麻的小字墙。
+        # 显示/隐藏都走延时：进入后 450ms 才浮出，离开后 120ms 才收起，
+        # 这样在同一个选项块内部（图标 -> 标题 -> 说明）移动鼠标时不会闪烁。
+        # ==============================================================
+        def attach_tip(holder, text):
+            if not text:
+                return
+            st = {"win": None, "show_job": None, "hide_job": None}
+
+            def _show():
+                st["show_job"] = None
+                if st["win"] is not None:
+                    return
+                try:
+                    x = holder.winfo_rootx() + 26
+                    y = holder.winfo_rooty() + holder.winfo_height() + 6
+                    tw = tk.Toplevel(holder)
+                    tw.wm_overrideredirect(True)
+                    tw.attributes("-topmost", True)
+                    tk.Label(tw, text=text, justify="left", anchor="w",
+                             bg="#2B2B2B", fg="#F2F2F2", font=("微软雅黑", 9),
+                             wraplength=360, padx=11, pady=9,
+                             relief="solid", bd=1).pack()
+                    tw.wm_geometry("+%d+%d" % (x, y))
+                    st["win"] = tw
+                except Exception:
+                    st["win"] = None
+
+            def _hide():
+                st["hide_job"] = None
+                if st["win"] is not None:
+                    try:
+                        st["win"].destroy()
+                    except Exception:
+                        pass
+                    st["win"] = None
+
+            def _cancel(key):
+                # 窗口已销毁时 after_cancel 会抛异常，这里一律吞掉
+                if st[key] is not None:
+                    try:
+                        holder.after_cancel(st[key])
+                    except Exception:
+                        pass
+                    st[key] = None
+
+            def on_enter(_=None):
+                _cancel("hide_job")
+                if st["win"] is None and st["show_job"] is None:
+                    try:
+                        st["show_job"] = holder.after(450, _show)
+                    except Exception:
+                        st["show_job"] = None
+
+            def on_leave(_=None):
+                _cancel("show_job")
+                if st["hide_job"] is None:
+                    try:
+                        st["hide_job"] = holder.after(120, _hide)
+                    except Exception:
+                        _hide()
+
+            def bind_all(w):
+                w.bind("<Enter>", on_enter, add="+")
+                w.bind("<Leave>", on_leave, add="+")
+                for ch in w.winfo_children():
+                    bind_all(ch)
+            bind_all(holder)
+
+        def create_option(parent, row, col, var, title, desc, tip=None):
             f = tk.Frame(parent, bg="#FFFFFF")
-            # 【本版本改动 4】：sticky 由 "w" 改为 "ew"
-            # 让每个选项块占满所在列的整个宽度，说明文字才有确定的可用宽度，
-            # 不会像旧版那样被挤到超出栏宽、首尾各啃掉两三个字。
-            f.grid(row=row, column=col, sticky="ew", padx=10, pady=6)
+            # 【271 版】sticky 由 "ew" 改为 "new"
+            # ----------------------------------------------------------
+            # 旧值 "ew" 只在水平方向拉伸，纵向不拉伸，于是 tkinter 把每个
+            # 选项块在所在行里**垂直居中**。而一行的行高由该行最高的那块
+            # 决定，所以只要同一行里两个选项的说明行数不一样（一个三行、
+            # 一个一行），矮的那个标题就会被推到行的中间去，看上去参差不齐。
+            # 加上 "n" 之后每块一律贴着行的顶边，标题就横平了。
+            # 说明文字本版也统一压到两行以内，行高整齐，观感更稳。
+            f.grid(row=row, column=col, sticky="new", padx=10, pady=6)
 
             # 头部容器，包含几何图标和标题，并设置鼠标悬停为手型
             head_frame = tk.Frame(f, bg="#FFFFFF", cursor="hand2")
@@ -2401,32 +4006,99 @@ class PDFOCRApp:
             title_lbl.bind("<Button-1>", toggle)
             head_frame.bind("<Button-1>", toggle)
 
+            # 【271 版】整块（图标 / 标题 / 说明）都能触发悬停提示
+            attach_tip(f, tip)
+
         # ==========================================================
-        # 【本版本改动 2】：按普通用户的实际使用频率重排 8 条指令
+        # 【本版本改动 2 / 261 版扩充】按实际使用频率排列的 9 条指令
         # ----------------------------------------------------------
         # 排序原则：越靠前 = 越多人会去动它；越靠后 = 越偏开发者自查。
-        #   第 1 行  版面控制 —— 决定识别范围，最常被调整
-        #   第 2 行  产物形态 —— 决定最后输出成什么文件
-        #   第 3 行  疑难救援 —— 文件打不开、识别错了才用
-        #   第 4 行  开发自查 —— 调试用，普通用户一辈子用不到
-        # 滚动条默认停在顶部，所以最常用的两条永远是一展开就能看到的。
+        # 阅读顺序是「从左到右、从上到下」，整条序列严格按频率单调递减：
+        #
+        #   1 关闭页边滤除    2 双联页拆分      <- 版面控制，最常被调整
+        #   3 竖排文本        4 原地覆写        <- 文档类型 / 产物形态
+        #   5 纯净文本        6 关闭倾斜校正
+        #   7 光栅化渲染      8 擦除矢量层      <- 疑难救援，出问题了才用
+        #   9 色彩置信度显影 10 分段计时诊断    <- 开发自查，普通用户用不到
+        #
+        # 【262 版新增的"竖排文本"为什么放在第 3 位】：它和"双联页拆分"
+        # 一样，属于"这本书是什么形制"的声明 —— 拿到一本竖排书，
+        # 用户在点开始之前就知道要勾它，而不是等出了问题再回来找。所以
+        # 紧跟在版面控制那一档后面，排在所有"产物形态"与"疑难救援"之前。
+        #
+        # 【261 版新增的"关闭倾斜校正"为什么放在第 5 位】：倾斜校正是默认
+        # 开启并且自带死区与钳位的，绝大多数人一辈子不需要关它；但它是本版
+        # 唯一会改变文字层几何形态的新行为，万一某本书上表现异常，用户第一
+        # 反应就是找地方把它关掉。所以归入"疑难救援"档，并排在该档最前 ——
+        # 比"光栅化渲染""擦除矢量层"这两条更容易被想起来。
+        #
+        # 9 条指令铺进两列，末尾必然空出一格；把空格留在最后一行的右侧，
+        # 视觉上最不突兀。滚动条默认停在顶部，最常用的两条一展开就能看到。
         # ==========================================================
 
         # ---------- 第 1 行：版面控制（最高频） ----------
-        create_option(opt_frame, 0, 0, self.var_skip_layout, "关闭页边滤除 (-S)", "跳过版面分析引擎，不进行页眉页脚拦截。\n强制对全部画面进行基于大模型的OCR扫描。")
-        create_option(opt_frame, 0, 1, self.var_split_double, "双联页拆分 (-D)", "适用于左右两页被扫描在同一张图上的书籍。\n先沿中缝切成两张独立页面再识别，左右页可分别框选。\n注意：输出的 PDF 页数会变成原来的两倍。")
+        create_option(opt_frame, 0, 0, self.var_skip_layout, "关闭页边滤除 (-S)",
+                      "跳过版面分析，全画幅识别。\n页眉页脚与页码也会一并写入。",
+                      "默认会先用版面模型拟合出正文的天头地脚与左右边界，把落在正文框外的"
+                      "页眉、页脚、页码拦掉，避免它们混进正文。勾选后跳过这一步，整页文字"
+                      "一律识别写入。适合版式特殊、正文被误拦的文档。")
+        create_option(opt_frame, 0, 1, self.var_split_double, "双联页拆分 (-D)",
+                      "左右两页扫在同一张图时，\n沿中缝切成两页再识别。",
+                      "自动探测靠近页面中心的装订中缝并切开，左右半页分别做版面分析与识别，"
+                      "可以各自框选边界。注意：输出 PDF 的页数会变成原来的两倍；"
+                      "指定处理页码时按拆分前的物理页计算。")
 
-        # ---------- 第 2 行：输出产物形态（次高频） ----------
-        create_option(opt_frame, 1, 0, self.var_inplace, "原地覆写模式 (-I)", "直接向源 PDF 覆写文字层，不再另存新文件。\n建议提前备份原件。")
-        create_option(opt_frame, 1, 1, self.var_pure, "纯净文本模式 (-p)", "额外生成一份剥离背景、仅保留排版与文字的纯白 PDF。\n")
+        # ---------- 第 2 行：文档形制 + 输出产物形态 ----------
+        create_option(opt_frame, 1, 0, self.var_vertical, "竖排文本 (-V)",
+                      "自上而下、自右向左排版的\n竖排页面（如日文书刊、旧式排印）。",
+                      "文字层按列写入，列序自右向左重排，字号取自列长÷字数。开启后会自动"
+                      "跳过版面分析（竖排页上的天头地脚拟合不可靠），并对低分辨率扫描件"
+                      "自动提高渲染与检测精度。\n"
+                      "注意：低分辨率的密排影印件（尤其带双行夹注的）识别效果有限，"
+                      "受识别模型能力限制，不建议用于要求文字层完整的场合。")
+        create_option(opt_frame, 1, 1, self.var_inplace, "原地覆写模式 (-I)",
+                      "直接改写源 PDF，\n不再另存新文件。",
+                      "识别结果直接写回原文件，不生成 -OCR 副本。省磁盘，但原件会被替换，"
+                      "建议先自行备份。")
 
-        # ---------- 第 3 行：疑难文件救援（偶尔用） ----------
-        create_option(opt_frame, 2, 0, self.var_pixmap, "光栅化页面渲染 (-P)", "强制将矢量图层合并为位图后再分析，\n对付图文损毁文档、或被恶意加密的文献。")
-        create_option(opt_frame, 2, 1, self.var_no_ocr, "擦除矢量层 (-n)", "关闭大模型识别，仅执行简单的页面图层剥离。\n用于快速擦除之前生成的错误识别结果。")
+        # ---------- 第 3 行：产物形态续 + 疑难救援 ----------
+        create_option(opt_frame, 2, 0, self.var_pure, "纯净文本模式 (-p)",
+                      "额外生成一份剥离背景、\n只保留文字与排版的白底 PDF。",
+                      "在正常输出之外再生成一个 -pure 文件：白底、无扫描图像，只按原位置"
+                      "保留可见文字。适合需要干净排版底稿、或想直观检查文字层落点是否准确的场合。")
+        create_option(opt_frame, 2, 1, self.var_no_skew, "关闭倾斜校正 (--no-skew)",
+                      "强制水平写入文字层。\n仅在校正后反而对不齐时勾选。",
+                      "默认会让文字层跟随每一行的真实倾角一起倾斜，以贴合歪斜的扫描件——"
+                      "小于 0.3 度视为不倾斜，大于 30 度视为异常框不予校正。"
+                      "勾选此项则一律水平写入，回到旧版行为。")
 
-        # ---------- 第 4 行：开发者自查（普通用户不必理会） ----------
-        create_option(opt_frame, 3, 0, self.var_debug, "色彩置信度显影 (-g)", "【调试用】将识别出的文字层，以热力图的色彩烙印在画面上。\n色彩越冷，代表神经网络对该字符的置信概率越低。")
-        create_option(opt_frame, 3, 1, self.var_timing, "分段计时诊断 (--timing)", "【调试用】在控制台打印每页的耗时构成（渲染/推理/写入），\n并检测 Paddle 是否真的在用 GPU 运算。\n用于判断速度瓶颈到底在代码还是在显卡。")
+        # ---------- 第 4 行：疑难文件救援（偶尔用） ----------
+        create_option(opt_frame, 3, 0, self.var_pixmap, "光栅化页面渲染 (-P)",
+                      "先把矢量图层压成位图再分析。\n对付损毁或加密的文档。",
+                      "强制把页面里的矢量元素合并渲染成位图之后再送识别。用于图文损毁、"
+                      "或被加密限制导致常规提取失败的文献。")
+        create_option(opt_frame, 3, 1, self.var_no_ocr, "擦除矢量层 (-n)",
+                      "只剥离原有文字层，不做识别。\n用于清除错误的旧识别结果。",
+                      "跳过整个识别环节，仅把 PDF 里已有的文字图层擦掉。常用于"
+                      "先清除一次失败的识别结果，再重新跑一遍。")
+
+        # ---------- 第 5 行：低清影印件专用 + 开发者自查 ----------
+        create_option(opt_frame, 4, 0, self.var_multi_scale, "多尺度深度扫描 (--multi-scale)",
+                      "按 5 个缩放各识别一遍再合并。\n耗时约 5 倍，仅低清影印件需要。",
+                      "低分辨率影印件里细密小字的检测正好卡在模型的阈值上：换一个渲染缩放，"
+                      "同一列可能就从抓不到变成抓得到。本项按 5 个相邻缩放各识别一遍再合并"
+                      "去重，实测可用文字约提高两成。\n"
+                      "代价是耗时约为原来的 5 倍，清晰的印刷品不需要开。")
+        create_option(opt_frame, 4, 1, self.var_debug, "色彩置信度显影 (-g)",
+                      "【调试】把文字层以热力图颜色\n可见地烙在画面上。",
+                      "把本该隐形的文字层改为可见，并按识别置信度上色：色彩越冷，"
+                      "代表模型对该字符越没把握。用于直观排查识别质量与落点。")
+
+        # ---------- 第 6 行：开发者自查（普通用户不必理会） ----------
+        create_option(opt_frame, 5, 0, self.var_timing, "分段计时诊断 (--timing)",
+                      "【调试】打印每页各阶段耗时，\n并检测是否真的在用 GPU。",
+                      "在控制台打印每页的耗时构成（渲染 / 擦除 / 推理 / 写入），并检测 Paddle "
+                      "是否真的在用显卡运算。用于判断速度瓶颈到底在本程序的代码，还是在显卡。")
 
         #create_option(opt_frame, 4, 0, self.var_cv, "计算机视觉监控 (-c)", "开启 OpenCV 探针窗口，实时展现矩阵投影与滤波过程\n警告：会消耗额外的显存资源。")
 
@@ -2472,7 +4144,12 @@ class PDFOCRApp:
             # 小者，剩下装不下的内容交给右侧滚动条，永远不会再被挡住。
             # ==================================================
             COLLAPSED_H = 540                       # 折叠状态的窗口高度
-            FULL_PANEL_H = 340                      # 8 条指令全部铺开所需高度
+            # 【261 版】指令由 8 条增至 9 条、行数由 4 行增至 5 行，
+            # 这里同步加高一行的空间；屏幕装不下的部分仍由右侧滚动条兜底。
+            # 【271 版】说明统一压到两行后，每块恒为 76px、行距 88px，
+            # 6 行内容实测总高 560px。给到 580 使高屏上无需滚动即可看全；
+            # 屏幕装不下时仍由 safe_h 钳制，剩下的交给右侧滚动条。
+            FULL_PANEL_H = 580                      # 11 条指令全部铺开所需高度
             screen_h = self.root.winfo_screenheight()
             safe_h = int(screen_h * 0.85)           # 给任务栏和标题栏留出余量
 
@@ -2617,8 +4294,33 @@ class PDFOCRApp:
         # 【256 版】：检测网络的输入上限也跟着清晰度档位走。
         # 检测只负责框出文字行，识别仍从原分辨率裁剪，所以调小它
         # 只省显存和时间，不牺牲认字的清晰度。
+        # ==============================================================
+        # 【264 版新增】"强化检测"档
+        # --------------------------------------------------------------
+        # 前三档的检测输入上限（1280/1600/2000）是 256 版按"横排现代印刷品"
+        # 标定的，对那类材料绰绰有余 —— 在 265 DPI 的《古文舊書考》上实测，
+        # 1600 / 2500 / 不限三种设定的结果只在 94%~97% 之间浮动。
+        #
+        # 但低分辨率的密排影印件完全是另一回事：实测样本的扫描源只有约
+        # 64~89 DPI，正文字身本就只有十几个像素，双行夹注更是只有
+        # 一半，检测输入再被压到 1600，小注的笔画就彻底糊掉了。实测同一页：
+        #
+        #     档位                    显存峰值    第11页    第13页
+        #     220 档 (det1600)        1021 MB    361 字    537 字
+        #     300 档 (det2000)        1563 MB    466 字    587 字
+        #     强化检测档 (det2800)     2853 MB    573 字    702 字
+        #     det 完全不限            5489 MB    648 字    763 字
+        #
+        # det 完全不限能再多榨出一成，但 5489 MB 会吃掉一张 6GB 显卡的几乎
+        # 全部显存，随时可能在别的环节爆掉；2800 这一档拿到了不限档九成的
+        # 效果，显存只有它的一半，是这条曲线上的拐点。
+        #
+        # 只在用户主动选择时启用，前三档一个数都没动。
+        # ==============================================================
         if "150" in dpi_str:
             target_dpi, max_pixels, det_limit = 150.0, 1800.0, 1280
+        elif "强化检测" in dpi_str:
+            target_dpi, max_pixels, det_limit = 300.0, 3800.0, 2800
         elif "300" in dpi_str:
             target_dpi, max_pixels, det_limit = 300.0, 3800.0, 2000
         else:
@@ -2645,7 +4347,7 @@ class PDFOCRApp:
             split_window=0.06,      # 自动探测的搜索窗口（页宽比例）
             split_gap=0.0,          # 分割线两侧的安全间隙 (pt)
             split_skip="",          # 不参与拆分的页码，如 "1,32"
-            split_rtl=False,        # True = 右页在前（竖排古籍等）
+            split_rtl=False,        # True = 右页在前（自右向左翻阅的书籍）
             split_dpi=300.0,        # 拆分时两个半页的重采样分辨率（仍受上面的像素上限钳制）
             split_quality=88,       # 半页图像的 JPEG 质量，88 是画质/内存的平衡点
             split_lossless=False,   # True = 无损存半页（内存占用约 27 倍，一般用不到）
@@ -2654,7 +4356,14 @@ class PDFOCRApp:
             layout_engine="fast",   # 版面分析走轻量通道；改成 "v3" 可退回旧的 PPStructureV3
             timing=self.var_timing.get(),   # 是否打印分段计时报告与设备体检
             legacy_text=False,      # True = 退回旧的逐字符慢速写入通道
-            gc_interval=10          # 每多少页强制回收一次内存
+            gc_interval=10,         # 每多少页强制回收一次内存
+            # --- 【261 版新增】倾斜文字层校正 ---
+            no_skew=self.var_no_skew.get(),  # True = 关闭倾斜校正，退回水平写入
+            vertical=self.var_vertical.get(),  # 【262】True = 竖排文本（竖排排印/日文）
+            multi_scale=(5 if self.var_multi_scale.get() else 1),  # 【269】5 = 五尺度深度扫描
+            det_thresh=None,        # 【270】None = 用引擎默认；低分辨率影印件会自动放宽
+            det_box_thresh=None,
+            skew_max=30.0           # 超过这个角度的框判定为异常，按 0 度处理
         )
 
         args.ui_callback = self.update_ui_progress
@@ -2888,12 +4597,23 @@ def parse_arguments():
 
     # === 新增：性能相关指令 ===
     parser.add_argument(
+        "--skip-cuda-fetch",
+        action="store_true",
+        help="Skip the first-run download of the NVIDIA compute libraries "
+             "(lightweight build only). Useful for testing, or when the "
+             "libraries are placed next to the executable manually.",
+    )
+    # 【266 版】默认值改为 None，好把"用户显式指定"和"用了默认值"区分开：
+    # 竖排 + 低分辨率扫描件会自动抬高这个上限，但只要用户自己写了这个参数，
+    # 就完全听用户的。真正的默认值 1600 在 run_cli_mode 里补。
+    parser.add_argument(
         "--det-limit",
         type=int,
-        default=1600,
+        default=None,
         help="Max side length (px) fed into the text detection network "
-             "(default 1600). Lower = far less GPU memory and faster; "
-             "0 disables the limit and restores the old behaviour.",
+             "(default 1600; vertical mode auto-raises it to 2800 on scans "
+             "below 150 DPI). Lower = far less GPU memory and faster; "
+             "0 disables the limit.",
     )
     parser.add_argument(
         "--layout-engine",
@@ -2919,6 +4639,50 @@ def parse_arguments():
         default=10,
         help="Run gc.collect() every N pages (default 10; set 1 to restore the old every-page behaviour).",
     )
+    parser.add_argument(
+        "--dpi",
+        type=float,
+        default=None,
+        help="Target render DPI (default 220; the GUI tiers use 150/220/300).",
+    )
+    parser.add_argument(
+        "--max-pixels",
+        type=float,
+        default=None,
+        help="Max rendered long-side pixels, clamped to a hard ceiling of 4000 "
+             "(GUI tiers use 1800/2500/3800).",
+    )
+    parser.add_argument(
+        "--det-thresh", type=float, default=None,
+        help="DB binarization threshold (PaddleOCR default 0.3). Lower keeps fainter strokes.",
+    )
+    parser.add_argument(
+        "--det-box-thresh", type=float, default=None,
+        help="DB box-keep threshold (PaddleOCR default 0.6). Lower keeps weaker boxes.",
+    )
+    parser.add_argument(
+        "--multi-scale",
+        nargs="?", type=int, const=5, default=1, choices=[1, 3, 5, 7],
+        help="Deep scan: run detection at N nearby render scales and merge the results "
+             "(bare flag = 5). Roughly N times slower; meant for low-resolution photo "
+             "reprints whose fine dense text sits right on the detector's threshold.",
+    )
+    parser.add_argument(
+        "-V", "--vertical",
+        action="store_true",
+        help="Treat the document as vertical (top-to-bottom, right-to-left) CJK text. Implies -S.",
+    )
+    parser.add_argument(
+        "--no-skew",
+        action="store_true",
+        help="Disable text-line skew correction; write the text layer strictly horizontal (258 behaviour).",
+    )
+    parser.add_argument(
+        "--skew-max",
+        type=float,
+        default=30.0,
+        help="Text lines tilted by more than this many degrees are treated as anomalies and written horizontally (default 30).",
+    )
 
     return parser.parse_args()
 
@@ -2933,6 +4697,30 @@ def run_cli_mode(parsed_args):
     # 核心：将局部解析的参数赋权给全局作用域，让深层的 process_pdf 能够顺畅读取
     global args
     args = parsed_args
+
+    # ==================================================================
+    # 【264 版新增】命令行补上清晰度旋钮
+    # ------------------------------------------------------------------
+    # 在此之前，target_dpi / max_pixels 只有图形界面的下拉框能选，命令行
+    # 一律吃 getattr 的兜底值（220 DPI / 2500 像素），连带 det_limit 也只能
+    # 单独指定。对低分辨率的密排影印件来说这套默认值明显不够用（实测见下方
+    # get_ocr_engine 附近的注释），而命令行恰恰是批处理这类书的主要入口。
+    # 这里把两个旋钮补齐，语义与界面档位完全一致。
+    # ==================================================================
+    # 【266/268 版】先记录"用户显式写了哪几个清晰度参数"，再补默认值。
+    # 顺序不能反：下面几行会把 args.dpi / args.max_pixels 覆盖成具体数值，
+    # 一旦先赋值再判断，getattr(...) is not None 就恒为真，自动提升永远不触发。
+    # 三个参数任意一个被显式指定，就认为用户在自己掌控分辨率，不再自动整档提升。
+    args._det_limit_explicit = getattr(args, 'det_limit', None) is not None
+    args._res_explicit = (args._det_limit_explicit
+                          or getattr(args, 'dpi', None) is not None
+                          or getattr(args, 'max_pixels', None) is not None)
+
+    args.target_dpi = float(getattr(args, 'dpi', None) or 220.0)
+    args.max_pixels = float(getattr(args, 'max_pixels', None) or 2500.0)
+    if args.det_limit is None:
+        args.det_limit = 1600
+    _failed = 0          # 【261 版】统计失败文件数，供退出码使用
 
     # --- 处理全局自定义输出目录 ---
     custom_outdir = None
@@ -2985,6 +4773,7 @@ def run_cli_mode(parsed_args):
             elif isinstance(status, str) and status.startswith("ERROR_PAGE:"):
                 # 【新增】：让参数错误在命令行下也能如实报出，而不是误报成功
                 print(f"❌ 任务中止: {status.split('ERROR_PAGE:', 1)[1]}\n")
+                _failed += 1
             else:
                 # ==========================================================
                 # 【终极修正】：CLI 模式下的真实物理保存路径嗅探
@@ -2997,9 +4786,43 @@ def run_cli_mode(parsed_args):
                 print(f"   └─ 归档位置: {actual_out_path.resolve()}\n")
 
         except Exception as e:
-            print(f"❌ 处理 {input_path.name} 时发生严重错误: {e}\n")
+            # 【261 版修正】原先只打印一行摘要，既看不到堆栈、也不影响退出码。
+            # 对要分发给别人的程序来说这是错的：批处理脚本会把失败当成功，
+            # 用户也拿不到任何可供排查的信息。
+            #
+            # 【262 版补充】内存不足是真实用户最容易遇到的一种失败：
+            # 本程序模型常驻就要 2 GB 上下，16 GB 的机器上再开着浏览器、
+            # 游戏或虚拟机就可能分配不出来。numpy 抛的原文是一句英文的
+            # "Unable to allocate ... for an array with shape ..."，
+            # 普通用户完全看不懂，所以这里翻译成可执行的建议。
+            _msg = str(e)
+            if ("Unable to allocate" in _msg or "MemoryError" in type(e).__name__
+                    or "bad_alloc" in _msg or "Out of memory" in _msg):
+                print(f"❌ 处理 {input_path.name} 失败：内存不足。\n")
+                print("   本程序需要约 2~3 GB 可用内存。请尝试：")
+                print("     · 关闭浏览器、游戏、虚拟机等占内存的程序后重试；")
+                print("     · 在界面上把扫描清晰度调低一档（如 300 -> 220）；")
+                print("     · 用「指定处理页码」把大文件拆成几段分批处理。")
+                print(f"   （原始信息：{_msg[:120]}）\n")
+            else:
+                print(f"❌ 处理 {input_path.name} 时发生严重错误: {e}\n")
+            import traceback as _tb
+            for _line in _tb.format_exc().splitlines()[-8:]:
+                print("   | " + _line)
+            print()
+            _failed += 1
 
-    print("🎉 所有任务已处理完毕！")
+    # ==================================================================
+    # 【261 版修正】：如实汇报成败，并用退出码告诉外部世界
+    #   0  = 全部成功（或被智能跳过）
+    #   非 0 = 失败的文件数
+    # 旧版无论成败一律退出 0，批处理脚本和自动化流程会误判成功。
+    # ==================================================================
+    if _failed:
+        print("⚠️  全部任务结束：共 %d 个文件处理失败。" % _failed)
+    else:
+        print("🎉 所有任务已处理完毕！")
+    return _failed
 
 if hasattr(paddle.device, 'is_bfloat16_supported'):
     paddle.device.is_bfloat16_supported = lambda *args, **kwargs: False
@@ -3010,6 +4833,162 @@ logging.disable(logging.DEBUG)
 # =========================================================================
 # [独立模块 4]：主路由枢纽 (Main Router)
 # =========================================================================
+def check_gpu_ready():
+    """
+    【257 版新增】开机自检：这台机器到底能不能跑。
+
+    返回 (是否有可用 N 卡, 给用户看的说明文字)。
+    本程序的速度完全建立在 NVIDIA 显卡上：实测同一本书，
+    有 N 卡约 0.9 秒/页，纯 CPU 会慢一个数量级，而且会把整机拖到卡顿。
+    所以没有 N 卡时必须明确告知，而不是让它默默地慢慢跑。
+    """
+    try:
+        import paddle
+        if not paddle.device.is_compiled_with_cuda():
+            return False, ("当前程序包是 CPU 版本，没有编译 CUDA 支持。\n"
+                           "请下载 GPU 版本的程序包。")
+        if paddle.device.cuda.device_count() < 1:
+            return False, ("未检测到可用的 NVIDIA 显卡。\n\n"
+                           "本程序依靠 NVIDIA 显卡进行 AI 识别运算。\n"
+                           "在纯 CPU 上运行会慢一个数量级，并且很可能\n"
+                           "把整台电脑拖到严重卡顿，因此强烈不建议继续。\n\n"
+                           "请确认：\n"
+                           "  1. 这台电脑装有 NVIDIA 独立显卡；\n"
+                           "  2. 显卡驱动已更新到较新版本。")
+        name = paddle.device.cuda.get_device_properties(0).name
+        return True, "已就绪：%s" % name
+    except Exception as e:
+        return False, "显卡环境自检失败：%s: %s" % (type(e).__name__, e)
+
+
+
+def run_selftest():
+    """
+    【260 版新增】打包环境自检（命令行加 --selftest 触发）。
+
+    打包成 exe 之后，很多在源码环境下理所当然的东西会悄悄失效：
+    包元数据读不到、配置文件没打进去、DLL 搜索路径不对……而报错信息
+    往往被上层吞成一句没头没尾的 "dependency error"。
+    这个自检把每一环单独拎出来验一遍，一次性定位问题在哪一层。
+    """
+    import traceback
+
+    def head(t):
+        print("\n" + "=" * 66)
+        print("  " + t)
+        print("=" * 66)
+
+    print("\n" + "#" * 66)
+    print("#  PDFOCR 打包环境自检")
+    print("#" * 66)
+
+    head("1. 运行模式与路径")
+    print("   frozen(是否为 exe)   : %s" % getattr(_sys, "frozen", False))
+    print("   APP_DIR              : %s" % APP_DIR)
+    print("   _MEIPASS             : %s" % getattr(_sys, "_MEIPASS", "(无)"))
+    print("   PADDLE_PDX_CACHE_HOME: %s" % _os.environ.get("PADDLE_PDX_CACHE_HOME", "(未设置)"))
+    _cache = _os.environ.get("PADDLE_PDX_CACHE_HOME", "")
+    print("   程序路径是否纯 ASCII  : %s%s" % (
+        _is_ascii(APP_DIR),
+        "" if _is_ascii(APP_DIR) else "   <- 含中文，已启用路径防护"))
+    if _cache:
+        print("   模型路径是否纯 ASCII  : %s%s" % (
+            _is_ascii(_cache),
+            "" if _is_ascii(_cache) else "   <- 【危险】paddle 将无法读取模型"))
+    _mroot = _os.path.join(_os.environ.get("PADDLE_PDX_CACHE_HOME", ""), "official_models")
+    if _os.path.isdir(_mroot):
+        print("   包内模型             : %s" % ", ".join(sorted(_os.listdir(_mroot))))
+    else:
+        print("   包内模型             : 【缺失】%s 不存在" % _mroot)
+
+    head("2. 包元数据 importlib.metadata")
+    import importlib.metadata as _im
+    for pkg in ("paddlex", "paddleocr", "paddlepaddle-gpu"):
+        try:
+            print("   %-18s 版本 %s" % (pkg, _im.version(pkg)))
+        except Exception as e:
+            print("   %-18s 【读不到】%s: %s" % (pkg, type(e).__name__, e))
+    try:
+        md = _im.metadata("paddlex")
+        extras = md.get_all("Provides-Extra", [])
+        print("   paddlex extras     : %d 个" % len(extras))
+        reqs = _im.requires("paddlex") or []
+        print("   paddlex requires   : %d 条" % len(reqs))
+    except Exception as e:
+        print("   paddlex 元数据读取失败: %s: %s" % (type(e).__name__, e))
+
+    head("3. paddlex 依赖自检（这是报 dependency error 的那一层）")
+    try:
+        from paddlex.utils import deps as _deps
+        for fn in ("get_dep_version", "is_dep_available", "require_deps"):
+            print("   deps.%-20s %s" % (fn, "有" if hasattr(_deps, fn) else "无"))
+        for extra in ("ocr", "ocr-core", "cv", "base"):
+            try:
+                fn = getattr(_deps, "is_extra_available", None)
+                print("   extra %-10s 可用: %s" % (extra, fn(extra) if fn else "(无此接口)"))
+            except Exception as e:
+                print("   extra %-10s 检查失败: %s: %s" % (extra, type(e).__name__, e))
+    except Exception:
+        print("   导入 paddlex.utils.deps 失败:")
+        for l in traceback.format_exc().splitlines()[-6:]:
+            print("      | " + l)
+
+    head("4. paddle 与运算设备")
+    try:
+        import paddle
+        print("   paddle 版本          : %s" % getattr(paddle, "__version__", "?"))
+        print("   编译含 CUDA          : %s" % paddle.device.is_compiled_with_cuda())
+        print("   GPU 数量             : %s" % paddle.device.cuda.device_count())
+        print("   resolve_device()     : %s" % AIModelEngine.resolve_device())
+    except Exception:
+        for l in traceback.format_exc().splitlines()[-6:]:
+            print("      | " + l)
+
+    head("5. 逐个实例化模型引擎（关键）")
+    print("\n   [5.1] 轻量通道 LayoutDetection")
+    try:
+        from paddleocr import LayoutDetection
+        eng = LayoutDetection(model_name="PP-DocLayout_plus-L",
+                              device=AIModelEngine.resolve_device(),
+                              enable_mkldnn=False)
+        print("        ✅ 实例化成功")
+        del eng
+    except Exception:
+        print("        ❌ 失败，完整堆栈：")
+        for l in traceback.format_exc().splitlines():
+            print("        | " + l)
+
+    print("\n   [5.2] 完整通道 PPStructureV3")
+    try:
+        from paddleocr import PPStructureV3
+        eng = PPStructureV3(use_region_detection=True, use_table_recognition=False,
+                            use_formula_recognition=False, use_seal_recognition=False,
+                            use_chart_recognition=False, use_doc_orientation_classify=False,
+                            use_doc_unwarping=False, use_textline_orientation=False,
+                            device=AIModelEngine.resolve_device(),
+                            precision="fp32", enable_mkldnn=False)
+        print("        ✅ 实例化成功")
+        del eng
+    except Exception:
+        print("        ❌ 失败，完整堆栈：")
+        for l in traceback.format_exc().splitlines():
+            print("        | " + l)
+
+    print("\n   [5.3] OCR 通道 PaddleOCR")
+    try:
+        ocr = AIModelEngine.get_ocr_engine("ch")
+        print("        ✅ 实例化成功")
+        del ocr
+    except Exception:
+        print("        ❌ 失败，完整堆栈：")
+        for l in traceback.format_exc().splitlines():
+            print("        | " + l)
+
+    print("\n" + "#" * 66)
+    print("#  自检结束")
+    print("#" * 66 + "\n")
+
+
 def main():
     """
     环境嗅探引擎：根据用户启动程序的方式，智能分发执行模式。
@@ -3017,13 +4996,41 @@ def main():
     import sys
 
     # 核心分流逻辑：如果附带了任何额外参数，说明用户是在命令行（终端）执行的，切入 CLI 模式
+    if "--selftest" in sys.argv:
+        run_selftest()
+        return
+
     if len(sys.argv) > 1:
+        ok, msg = check_gpu_ready()
+        if not ok:
+            print("\n" + "!" * 60)
+            print("⚠️  显卡环境提醒")
+            print("!" * 60)
+            for line in msg.split("\n"):
+                print("   " + line)
+            print("!" * 60)
+            print("   程序仍会继续，但速度会非常慢。\n")
         parsed_args = parse_arguments()
-        run_cli_mode(parsed_args)
+        # 【261 版】把失败数作为退出码返回给调用方
+        sys.exit(run_cli_mode(parsed_args))
 
     # 如果没有任何参数，说明用户是直接双击了 .py 脚本运行，智能唤醒可视化 GUI
     else:
         root = tk.Tk()
+
+        # 【257 版】：GUI 起来之前先做显卡自检，没有 N 卡就问一句再走，
+        # 免得用户莫名其妙地等上几个小时、还以为程序卡死了。
+        ok, msg = check_gpu_ready()
+        if not ok:
+            root.withdraw()
+            go_on = messagebox.askyesno(
+                "显卡环境提醒",
+                msg + "\n\n仍要继续吗？（继续将以极慢的 CPU 模式运行）")
+            if not go_on:
+                root.destroy()
+                return
+            root.deiconify()
+
         app = PDFOCRApp(root)
         root.mainloop()
 
