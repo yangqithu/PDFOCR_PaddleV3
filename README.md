@@ -1,364 +1,305 @@
 # PDFOCR PaddleV3
 
-基于 PaddleOCR 3 的 PDF OCR 桌面工具，为扫描版 PDF 添加可搜索、可复制的隐藏文字层，并通过版面分析减少页眉、页脚和页码对正文识别的干扰。v32 在 v31 的速度与显存优化基础上，加入倾斜校正、竖排文字模式和低分辨率文档强化检测。
+PDFOCR 是一款面向 Windows 的本地 PDF OCR 工具。它可以给扫描版 PDF 写入可搜索、可复制的隐藏文字层，同时尽量保持原页面的图像、版式和字符位置不变。
 
-*A Windows-oriented GUI and CLI tool that adds a searchable OCR text layer to scanned PDFs, with layout-aware filtering, skew correction, and opt-in vertical-text support.*
+当前稳定版：**v281**。推荐使用 NVIDIA 显卡的 Windows 10/11 用户下载已经打包好的 ZIP，无需安装 Python。
 
-> [!IMPORTANT]
-> 当前发布的是 **v32 源代码版本**。横排文字继续使用稳定默认流程；竖排文档需要手动启用 `-V` / `--vertical`。程序会自动选择 `gpu:0` 或 CPU，但 CPU 模式可能慢一个数量级，因此仍强烈推荐 NVIDIA GPU 及匹配的 PaddlePaddle GPU 环境。模型、CUDA 和 EXE 不包含在仓库中。
+![PDFOCR 主界面](docs/images/main-interface.png)
 
-详细版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+## 为什么选择 PDFOCR
 
-![PDFOCR PaddleV3 主界面](docs/images/main-interface.png)
+1. **大模型识别，准确率极高**
+   使用 PP-OCRv5 server 级文字检测和识别模型。在清晰的印刷扫描件上通常可以获得很高的识别准确率；实际效果仍会受到扫描清晰度、字体和版式影响。
 
-## 项目特点
+2. **多语种识别**
+   支持简体中文、繁体中文、英文、日文、韩文、法文、德文等常用语种，也可以手动填写 PaddleOCR 支持的语言代码。
 
-- **图形界面与命令行双模式**：不带参数启动时打开 Tkinter 桌面界面，带文件参数时进入 CLI 批处理。
-- **扫描件文字层写入**：在保留原 PDF 视觉内容的基础上写入隐藏文字，使扫描件可以搜索和复制。
-- **更快的版面分析**：默认使用独立版面检测模型分析正文边界，减少重复 OCR；必要时可切回 PP-StructureV3。
-- **原生 PDF 检测**：抽样判断文档是否已有矢量文字层，并选择清理页边元素或跳过不必要的 OCR。
-- **奇偶页分别拟合**：分别估计左右页的边界，适应书籍装订线和不对称页边距。
-- **中文标点宽度调整**：压缩常见全角标点的文字层占位宽度，改善横排文字层与原图的贴合程度。
-- **批量处理**：支持多文件、文件夹递归选择、指定输出目录以及同名文件自动编号。
-- **局部处理**：图形界面支持指定单页或连续物理页码范围，如 `5` 或 `5-10`。
-- **双联页拆分**：可自动寻找书籍跨页中缝，也可按固定比例切分；支持跳过指定页面和从右向左排列。
-- **显存与内存优化**：限制超大图像尺寸，版面分析完成后及时释放模型，并按间隔回收资源。
-- **性能诊断**：可输出各阶段耗时、GPU 状态和显存信息，便于排查速度或设备问题。
-- **倾斜文字层校正**：默认根据 OCR 四点框校正文字层角度；异常时可关闭或调整角度上限。
-- **竖排文字模式**：支持自上而下、自右向左的中日韩竖排文字层，必须由用户手动开启。
-- **强化检测**：提供 150、220、300 DPI 与“300 DPI 强化检测”档，并支持低分辨率文档的多尺度扫描和检测阈值调整。
-- **多语种识别**：界面内置中英文、繁体中文、日文、韩文、法文、德文等常用模型代码，也支持手动输入 PaddleOCR 语言代码。
-- **改进图形界面**：高级选项区域可滚动，参数块对齐并提供悬停说明；顶部控件不会再因长提示文字被压缩。
-- **设备与打包自检**：自动探测 GPU/CPU，提供 `--selftest` 检查模型、依赖和推理引擎，并为后续 Windows 打包准备模型路径与 CUDA 获取逻辑。
-- **资源清理**：处理过程中定期释放缓存，处理完成后主动释放模型引用、图像缓存、内存和 GPU 缓存。
+3. **页脚页眉滤除，方便跨页复制**
+   程序会分析正文区域，尽量排除页眉、页脚和页码。连续复制多页内容时，能够减少页码和重复标题混入正文。
 
-## 适用范围
+4. **排版严格对应原文字符位置**
+   隐藏文字层依据识别框写入，并结合倾斜校正、中文标点宽度调整和 PDF CropBox 补偿，尽量让可选中的文字贴合原图字符位置。
 
-本项目主要用于：
+5. **印刷体古籍及日语竖排文本识别**
+   可在主页面开启“竖排文本识别”，按自上而下、自右向左的顺序处理竖排文字，适合印刷体古籍和日语竖排文本。该模式需要手动开启。
 
-- 只有扫描图像、无法搜索文字的书籍或论文 PDF；
-- 页眉、页脚和页码容易混入 OCR 正文的文档；
-- 需要批量生成 `原文件名-OCR.pdf` 的本地工作流；
-- 需要检查文字识别置信度或生成纯文本辅助 PDF 的实验场景。
+此外，PDFOCR 还支持批量处理、文件夹递归选择、指定页码范围、双联页拆分、低分辨率强化检测、处理耗时统计和离线运行。
 
-它不是 PDF 编辑器，也不保证恢复原文档的字体、段落结构、书签、表格语义或阅读顺序。
+## 一分钟开始使用（NVIDIA Windows 用户）
 
-## 已知限制
+### 1. 下载 ZIP
 
-- **竖排模式需要手动开启**：程序不会自动判断整份文档是否应按竖排处理。使用 `-V` 后会跳过横排版面边界分析，并按自右向左的列序写入。
-- **低分辨率密排小字仍有明显漏识别**：测试中，大字正文可达到较高覆盖率，但双行小注召回率约为 32%，不适合要求文字层完整的场合。
-- **特殊竖排页面仍可能漏识别**：超大字号扉页、连点目录、横竖混排和自身带页面旋转的 PDF，文字层仍可能缺漏或错位。
-- **CPU 仅作为回退**：没有可用 NVIDIA GPU 时程序可以继续使用 CPU，但可能慢一个数量级，并使电脑长时间高负载。
-- **首次运行依赖网络**：未提供本地模型目录时，PaddleOCR 会尝试下载所需模型。
-- **复杂版式存在误判可能**：大幅插图、跨栏排版、边注、异形页面或损坏 PDF 可能导致正文边缘被错误过滤。
-- **高 DPI 占用更多资源**：300 DPI 会明显增加显存、内存和处理时间。程序会对超大图像自动缩放，但大型 PDF 仍可能需要较多资源。
-- **双联页会改变页数**：启用拆分后，普通跨页通常会变成两个输出页面；页码范围和跳过页码按拆分前的物理页计算。
-- **双联页默认采用有损压缩**：拆分出的半页默认以 JPEG 质量 88 暂存，以降低内存占用；需要无损时请使用 `--split-lossless`。
-- **原地覆写具有风险**：使用 `-I` 或界面的“原地覆写模式”前必须备份源文件。
-- 当前发布源代码与使用说明，不提供 EXE、CUDA、PaddlePaddle 安装包或预下载模型。
+点击下载：**[PDFOCR-v281-Windows-x64.zip](https://github.com/yangqithu/PDFOCR_PaddleV3/releases/latest/download/PDFOCR-v281-Windows-x64.zip)**
+
+下载完成后，右键 ZIP，选择“全部解压”。请不要直接在压缩包预览窗口中运行程序，也不要只把 `PDFOCR.exe` 单独拖出来。
+
+### 2. 启动软件
+
+打开解压后的 `PDFOCR` 文件夹，双击 `PDFOCR.exe`。
+
+程序每次启动都需要初始化 AI 引擎，可能会等待一段时间。窗口出现前请耐心等待，不要重复双击或强行关闭。
+
+本软件目前没有代码签名。Windows SmartScreen 如果显示“Windows 已保护你的电脑”，请先确认文件来自本仓库的 Release 页面，再点击“更多信息”→“仍要运行”。也可以按照本文后面的校验方法核对 SHA256。
+
+### 3. 正常下载 NVIDIA 运算库
+
+发布包已经包含程序和四个基础模型，但为了控制下载体积，**没有内嵌 NVIDIA CUDA 运算库**。
+
+第一次检测到运算库缺失时，程序会弹出说明窗口。确认下载后，程序才会联网获取约 2.2 GB 的固定版本组件，解压后约占 3.1 GB。默认会依次尝试清华大学镜像、北京外国语大学镜像和 PyPI，并在下载后校验文件大小和 SHA256。
+
+请保持网络连接和足够磁盘空间。下载完成后按提示重新启动软件。你不需要另外安装完整的 CUDA Toolkit。
+
+如果暂时不想下载，可以取消；程序不会在没有确认的情况下自动下载。
+
+### 4. 完成一次识别
+
+1. 点击“选择 PDF 文件”添加一个或多个扫描版 PDF；也可以选择文件夹批量导入。
+2. 选择输出目录。未指定时，结果通常保存到原文件旁边，并命名为 `原文件名-OCR.pdf`。
+3. 选择识别语言。中文资料一般使用简体中文；日语竖排资料应选择日语。
+4. 选择清晰度。普通清晰扫描件建议先用 **220 DPI**；小字或模糊页面再尝试 300 DPI 或“300 DPI 强化检测”。
+5. 如只处理部分页面，在“页码范围”中填写 `5` 或 `5-10`。这里使用 PDF 的物理页码，从 1 开始。
+6. 如果是印刷体古籍或日语竖排文本，开启“竖排文本识别”；普通横排文档不要开启。
+7. 根据需要勾选“完成时自动打开”，然后点击“开始处理”。
+
+处理完成后，用任意 PDF 阅读器打开输出文件，即可搜索或选择复制文字。
+
+## 下载文件
+
+| 文件 | 用途 |
+| --- | --- |
+| [PDFOCR-v281-Windows-x64.zip](https://github.com/yangqithu/PDFOCR_PaddleV3/releases/latest/download/PDFOCR-v281-Windows-x64.zip) | **推荐下载**。完整解压后运行，便于保留程序目录结构 |
+| [PDFOCR-v281-Windows-x64.exe](https://github.com/yangqithu/PDFOCR_PaddleV3/releases/latest/download/PDFOCR-v281-Windows-x64.exe) | 自解压安装包，与 ZIP 内容相同；运行后选择解压位置 |
+| [PDFOCR-v281-source.py](https://github.com/yangqithu/PDFOCR_PaddleV3/releases/latest/download/PDFOCR-v281-source.py) | v281 单文件统一源码 |
+| [SHA256SUMS.txt](https://github.com/yangqithu/PDFOCR_PaddleV3/releases/latest/download/SHA256SUMS.txt) | 发布文件的 SHA256 校验值 |
+
+> ZIP 和自解压 EXE 二选一即可，不需要同时下载。仓库中的 `PDFOCR_PaddleV3.py` 与 Release 中的源码内容相同。
 
 ## 系统要求
 
-推荐环境：
-
 - Windows 10/11 64 位；
-- Python 3.10；
-- 推荐支持 CUDA 的 NVIDIA GPU；无 GPU 时可回退 CPU，但速度很慢；
-- 与显卡驱动和 CUDA 环境匹配的 `paddlepaddle-gpu`；
-- 首次下载模型时可访问 PaddleOCR 模型源；
-- 处理大型 PDF 时具备足够的显存、内存和磁盘空间。
+- 推荐 NVIDIA 显卡，并安装较新的官方显卡驱动；
+- 推荐至少 16 GB 内存、6 GB 显存；
+- 首次准备 NVIDIA 运算库时，建议预留至少 6 GB 磁盘空间；
+- 程序包本身已经包含四个基础 OCR 模型，不需要另行下载模型；
+- 没有可用 NVIDIA GPU 时可以尝试 CPU 回退，但速度可能慢一个数量级，不适合大量文档。
 
-本项目开发环境中已验证的主要版本如下：
+## 主页面常用功能
 
-| 组件 | 版本 |
-| --- | --- |
-| Python | 3.10.11 |
-| paddlepaddle-gpu | 3.3.0 |
-| paddleocr | 3.4.0 |
-| PyMuPDF | 1.27.2.2 |
-| opencv-contrib-python（由 PaddleOCR/PaddleX 安装） | 4.10.0.84 |
-| Pillow | 12.1.1 |
-| NumPy | 1.24.4 |
-| tqdm | 4.67.3 |
+### 添加文件与选择输出位置
 
-其他版本可能可用，但尚未在本项目中验证。
+- “选择 PDF 文件”可一次添加多个文件。
+- “选择文件夹”可递归查找文件夹中的 PDF，适合批量处理。
+- 输出目录留空时，结果写到源文件旁；指定目录后，所有结果集中保存。
+- 同名输出文件已经存在时，程序会自动编号，避免直接覆盖。
 
-## 安装
+### 识别语言
 
-### 1. 获取源代码
+语言应与文档正文一致。中英混排通常可先选择简体中文模型；日文资料选择日语。选择错误的语言会显著降低识别质量。
 
-可以在 GitHub 项目页选择 **Code → Download ZIP** 并解压，也可以使用 Git 克隆仓库。进入包含 `PDFOCR_PaddleV3.py` 的项目目录后继续下面的步骤。
+### 清晰度档位
 
-### 2. 创建虚拟环境
+| 档位 | 建议用途 | 资源占用 |
+| --- | --- | --- |
+| 150 DPI | 快速预览、清晰大字 | 低 |
+| 220 DPI | 大多数普通扫描件，推荐起点 | 中等 |
+| 300 DPI | 小字、较模糊页面 | 较高 |
+| 300 DPI 强化检测 | 低分辨率、淡字、密排小字测试 | 很高 |
 
-```powershell
-py -3.10 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-```
+清晰度越高并不一定越准确，也会明显增加显存、内存和处理时间。建议先抽取几页试跑，再决定是否整本处理。
 
-如果 PowerShell 禁止运行激活脚本，也可以不激活环境，后续直接使用 `.\.venv\Scripts\python.exe`。
+### 页码范围
 
-### 3. 安装 PaddlePaddle GPU
+- 留空：处理全部页面；
+- `5`：只处理第 5 个物理页面；
+- `5-10`：处理第 5 至第 10 个物理页面。
 
-PaddlePaddle GPU 的安装命令取决于操作系统、显卡驱动和 CUDA 版本。请通过 [PaddlePaddle 官方安装页面](https://www.paddlepaddle.org.cn/install/quick) 选择与你的环境匹配的命令，不要盲目复制其他电脑的 GPU 安装命令。
+### 竖排文本识别
 
-本项目已验证过 `paddlepaddle-gpu==3.3.0`，但你仍需以官方安装选择器给出的索引地址和 CUDA 版本为准。
+该开关面向**印刷体古籍及日语竖排文本识别**。开启后，程序会使用适合竖排文字的检测、排序和文字层写入方式，并跳过仅适合横排正文的页边界分析。程序不会自动判断整本文档是否为竖排。
 
-如果只能安装 CPU 版 PaddlePaddle，v32 会自动回退到 CPU 并给出提醒，但这只是兼容路径，不适合大型 PDF 或高精度批处理。
+### 完成时自动打开
 
-安装后检查 Paddle 是否识别 CUDA：
+启用后，任务成功结束会自动打开生成的 PDF。批量处理或长时间无人值守时可以关闭。
 
-```powershell
-python -c "import paddle; print(paddle.__version__); print(paddle.device.is_compiled_with_cuda())"
-```
+## 高级功能
 
-最后一项应输出 `True`。
+展开主界面的“高级选项”可使用以下功能：
 
-### 4. 安装项目依赖
+- **双联页拆分**：把一张跨页扫描拆成左右两个输出页面；支持自动寻找中缝、固定比例、跳过指定页和从右向左输出。
+- **多尺度深度扫描**：用多个邻近尺度重复检测并合并结果，可能改善淡字和小字检测，但耗时与显存占用会明显增加。
+- **检测阈值**：降低阈值可能保留更多淡笔画，也可能带来噪点和误识别。
+- **最大检测边长**：限制送入文字检测模型的图像尺寸；增大有助于小字，但需要更多显存。
+- **倾斜校正**：默认读取 OCR 四点框角度，让文字层贴合倾斜扫描。异常文档可以关闭或调整角度上限。
+- **原地覆写**：直接替换源 PDF。使用前必须自行备份，普通用户不建议开启。
+- **仅生成文本辅助 PDF**：适合检查识别结果和文字层，不保留原扫描图像。
+- **跳过版面分析**：排查页眉页脚过滤是否误删正文时使用。
+- **分段计时**：显示拆分、版面分析、OCR 和文字写入等阶段耗时。
 
-```powershell
-python -m pip install -r requirements.txt
-python -m pip check
-```
+## 命令行和源码使用
 
-版面检测和 PP-StructureV3 兼容路径属于 PaddleOCR 的文档解析能力，因此依赖文件使用了 `paddleocr[doc-parser]`。可参考 [PaddleOCR 官方安装文档](https://www.paddleocr.ai/latest/version3.x/installation.html)。
+### 打包版命令行示例
 
-PaddleOCR/PaddleX 会安装提供 cv2 的 opencv-contrib-python。不要再同时安装 opencv-python，以免两个包争用同一模块。
-
-> [!NOTE]
-> 代码导入的是 PyMuPDF 提供的 `fitz` 模块。请安装 `PyMuPDF`，不要安装 PyPI 上另一个无关的 `fitz` 包。
-
-## 图形界面使用
-
-启动程序：
+在 `PDFOCR.exe` 所在目录打开 PowerShell：
 
 ```powershell
-python PDFOCR_PaddleV3.py
+.\PDFOCR.exe "D:\资料\扫描书.pdf"
+.\PDFOCR.exe "D:\资料\扫描书.pdf" -o "D:\OCR结果" -l ch --dpi 220
+.\PDFOCR.exe "D:\资料\古籍.pdf" -V -l ch --dpi 300
+.\PDFOCR.exe "D:\资料\日文.pdf" -V -l japan --timing
 ```
 
-如果 Windows 已正确关联 `.py` 文件，也可以双击脚本启动。
+### 源码运行示例
 
-1. 点击“选择文件”载入一个或多个 PDF，或点击“选择文件夹”递归载入其中的 PDF。
-2. 可选：设置统一输出目录；未设置时输出到原文件所在目录。
-3. 选择识别语种和扫描清晰度。一般文档建议先使用默认的 220 DPI；低分辨率密排小字可尝试“300 DPI 强化检测”，但显存占用约为 2.8 GB。
-4. 可选：勾选指定处理页码并输入单页 `5` 或连续范围 `5-10`。
-5. 如果原 PDF 每页包含左右两个书页，可勾选“双联页拆分 `-D`”。
-6. 如果文档为自上而下、自右向左的竖排文本，可勾选“竖排文本 `-V`”。它会自动跳过横排版面过滤。
-7. 检查高级选项；第一次使用建议保持默认。倾斜校正默认开启，高级选项区域可用鼠标滚轮查看，并可将鼠标停在选项上阅读完整说明。
-8. 点击“启动识别序列”，等待处理完成。
-9. 默认会自动打开处理完成的文档。
-
-![完整界面与高级选项](docs/images/advanced-options.png)
-
-> [!NOTE]
-> 截图用于展示整体布局。v32 的高级选项区域可滚动并带悬停说明，新增竖排文本、关闭倾斜校正和多尺度深度扫描等选项；截图中的局部文字可能与最新版略有不同。
-
-## 命令行使用
-
-处理单个文件：
+源码版需要自行准备 Python、PaddlePaddle GPU、PaddleOCR、PyMuPDF、OpenCV、Pillow 等依赖：
 
 ```powershell
-python PDFOCR_PaddleV3.py "D:\PDF\input.pdf"
+python .\PDFOCR_PaddleV3.py "D:\资料\扫描书.pdf"
+python .\PDFOCR_PaddleV3.py "D:\资料\古籍.pdf" -V -l ch --dpi 300
 ```
 
-批量处理多个文件：
+不带 PDF 参数运行时打开图形界面：
 
 ```powershell
-python PDFOCR_PaddleV3.py "D:\PDF\book-a.pdf" "D:\PDF\book-b.pdf"
+python .\PDFOCR_PaddleV3.py
 ```
 
-指定统一输出目录：
-
-```powershell
-python PDFOCR_PaddleV3.py "D:\PDF\book-a.pdf" "D:\PDF\book-b.pdf" -o "D:\PDF\OCR-results"
-```
-
-选择语言并生成置信度显影结果：
-
-```powershell
-python PDFOCR_PaddleV3.py "D:\PDF\input.pdf" -l en -g
-```
-
-拆分双联页并输出分段耗时：
-
-```powershell
-python PDFOCR_PaddleV3.py "D:\PDF\book.pdf" -D --timing
-```
-
-处理竖排文档并启用五尺度深度扫描：
-
-```powershell
-python PDFOCR_PaddleV3.py "D:\PDF\vertical-book.pdf" -V --multi-scale 5
-```
-
-按 300 DPI 渲染，并提高文字检测输入上限：
-
-```powershell
-python PDFOCR_PaddleV3.py "D:\PDF\faint-scan.pdf" --dpi 300 --max-pixels 3800 --det-limit 2800
-```
-
-命令行参数：
+### 常用参数
 
 | 参数 | 作用 |
 | --- | --- |
-| `input_files` | 一个或多个输入 PDF 文件，必填 |
-| `-o`, `--outdir` | 指定统一输出目录 |
-| `-p`, `--pure` | 额外生成纯白背景的文字版辅助 PDF |
-| `-c`, `--cv` | 显示 OpenCV 处理窗口 |
-| `-n`, `--no-ocr` | 跳过 OCR，用于清理已有文字层等场景 |
-| `-l`, `--lang` | 设置 PaddleOCR 语言代码，默认 `ch` |
-| `-I`, `--inplace` | 直接向源 PDF 写入文字层，使用前必须备份 |
-| `-P`, `--pixmap` | 强制使用页面光栅化结果进行分析 |
-| `-g`, `--debug` | 将文字层按识别置信度着色显示 |
-| `-S`, `--skip-layout` | 关闭智能页边过滤，对完整页面执行 OCR |
-| `-D`, `--split-double-page` | 将每个物理页拆分为左右两个页面 |
-| `--split-ratio` | 中缝自动检测失败时使用的固定切分比例 |
-| `--split-fixed` | 不自动寻找中缝，始终按固定比例切分 |
-| `--split-window` | 自动寻找中缝时，相对页面中心的搜索范围 |
-| `--split-gap` | 切分时从中缝两侧各去掉的像素数 |
-| `--split-skip` | 不拆分的物理页，如 `1,4-6` |
-| `--split-quality` | 拆分半页的 JPEG 暂存质量，默认 `88` |
-| `--split-lossless` | 拆分半页使用无损暂存，内存和文件体积会增加 |
-| `--split-rtl` | 拆分后先输出右半页，适合从右向左翻阅的书籍 |
-| `--split-dpi` | 双联页拆分时的渲染 DPI |
-| `--skip-cuda-fetch` | 轻量打包版中跳过首次 CUDA 运算库获取；源码运行时通常无需使用 |
-| `--det-limit` | 文字检测图像的最大边长，默认 `1600`；`0` 表示不限制 |
-| `--layout-engine` | 选择版面分析引擎；可切换到兼容的 `v3` 路径 |
-| `--timing` | 输出各处理阶段耗时和设备诊断信息 |
-| `--legacy-text` | 使用旧版逐字符文字层写入方式 |
-| `--gc-interval` | 每处理多少页执行一次资源回收，默认 `10` |
-| `--dpi` | 设置主识别渲染 DPI，默认 `220` |
-| `--max-pixels` | 设置渲染图像长边上限，程序硬上限为 `4000` |
-| `--det-thresh` | 设置 DB 二值化阈值；降低后可保留更淡的笔画 |
-| `--det-box-thresh` | 设置 DB 检测框保留阈值；降低后可保留较弱的文字框 |
-| `--multi-scale` | 使用 1、3、5 或 7 个邻近尺度重复检测并合并；裸参数等于 `5`，耗时约按尺度数增加 |
-| `-V`, `--vertical` | 按自上而下、自右向左的竖排模式处理，并自动等效于 `-S` |
-| `--no-skew` | 关闭默认启用的文字层倾斜校正 |
-| `--skew-max` | 设置可接受的倾斜角度上限，默认 `30` 度 |
-| `--selftest` | 执行打包环境自检，检查模型缓存、依赖、设备和三个推理引擎 |
+| `-o DIR`, `--outdir DIR` | 指定输出目录 |
+| `-p`, `--pure` | 在正常输出之外，额外生成白底纯文字辅助 PDF |
+| `-c`, `--cv` | 打开 OpenCV 调试窗口，查看程序实际读取的页面图像 |
+| `-n`, `--no-ocr` | 只剥离原有矢量文字层，不运行 OCR |
+| `-l CODE`, `--lang CODE` | 指定识别语言代码 |
+| `-I`, `--inplace` | 原地覆写源文件，使用前必须备份 |
+| `-P`, `--pixmap` | 强制把 PDF 页面栅格化后再做 OCR，不是页码范围参数 |
+| `-g`, `--debug` | 把文字层按识别置信度着色并显示在输出页面上 |
+| `-S`, `--skip-layout` | 跳过正文边界分析 |
+| `-V`, `--vertical` | 开启竖排文本识别 |
+| `--dpi N` | 设置 OCR 渲染 DPI |
+| `--max-pixels N` | 限制页面渲染后的最大像素数 |
+| `--det-limit N` | 设置文字检测最大边长；`0` 表示不限制 |
+| `--det-thresh N` | 调整文本像素检测阈值 |
+| `--det-box-thresh N` | 调整候选文字框阈值 |
+| `--multi-scale N` | 多尺度检测，常用 `3`、`5` 或 `7` |
+| `--no-skew` | 关闭文字层倾斜校正 |
+| `--skew-max N` | 设置允许的最大倾斜角度 |
+| `--legacy-text` | 使用旧版文字层写入方式作对照 |
+| `--gc-interval N` | 调整资源回收的页数间隔 |
+| `--timing` | 输出各处理阶段耗时 |
+| `--skip-cuda-fetch` | 禁止本次运行准备 CUDA 组件 |
 
-指定 OCR 页码范围目前仍是图形界面功能，没有对应的命令行参数。主识别 DPI、最大像素、双联页跳过页码与拆分 DPI 均可通过命令行设置。
+### 双联页拆分参数
 
-## 高级选项
+| 参数 | 作用 |
+| --- | --- |
+| `-D`, `--split-double-page` | 开启双联页拆分 |
+| `--split-ratio N` | 固定切分比例 |
+| `--split-fixed` | 关闭自动寻找中缝，始终按 `--split-ratio` 切分 |
+| `--split-window N` | 自动寻找中缝的中心搜索范围 |
+| `--split-gap N` | 中缝留白宽度 |
+| `--split-skip PAGES` | 不拆分的物理页码 |
+| `--split-quality N` | 拆分页的 JPEG 暂存质量 |
+| `--split-lossless` | 使用无损暂存，消耗更多内存和磁盘 |
+| `--split-rtl` | 先输出右半页，适合从右向左翻阅 |
+| `--split-dpi N` | 设置拆分页渲染 DPI |
 
-- **原地覆写模式 `-I`**：直接修改源 PDF。请先复制备份；一般不建议首次使用时开启。
-- **纯净文本模式 `-p`**：额外生成一份白色背景、只显示识别文字的辅助 PDF。
-- **色彩置信度显影 `-g`**：以可见颜色写入文字，便于检查置信度和对齐情况，不适合作为最终隐藏文字层版本。
-- **关闭页边滤除 `-S`**：跳过版面边界分析，扫描整页；适用于页边过滤误删正文的文档。
-- **擦除矢量层 `-n`**：跳过 OCR，用于清理旧的识别文字层等实验用途。
-- **光栅化页面渲染 `-P`**：将页面按像素渲染后再识别，适合图层损坏或难以提取原始图片的 PDF，但资源消耗更高。
-- **双联页拆分 `-D`**：适合一张 PDF 页面同时包含左右两个书页的扫描件。默认自动寻找中缝；识别不稳定时可使用固定比例。
-- **分段计时 `--timing`**：报告拆分、版面分析、文字检测、文字写入等阶段耗时，并显示可用的 GPU/显存信息。
-- **文字检测边长 `--det-limit`**：默认将检测输入的最大边长限制为 1600 像素，通常更快、更省显存；小字很多时可以适当提高。
-- **兼容版面引擎 `--layout-engine v3`**：默认快速版面引擎异常时，可切回 PP-StructureV3 路径进行对照。
-- **旧版文字写入 `--legacy-text`**：默认写入方式更快；若个别文档的文字层表现异常，可以用此参数对比旧方法。
-- **竖排文本 `-V`**：按列写入文字层，并把列序改为自右向左。此模式必须手动开启，同时会跳过横排版面过滤。
-- **关闭倾斜校正 `--no-skew`**：倾斜校正默认启用；若某份文档的文字层角度异常，可关闭后与旧水平写入方式对比。
-- **多尺度深度扫描 `--multi-scale`**：针对低分辨率、淡字或密排小字重复检测。它只能改善部分漏检，不能突破识别模型对模糊小字的能力上限。
-- **检测阈值 `--det-thresh` / `--det-box-thresh`**：降低阈值可保留更多淡笔画和弱框，也可能增加噪声；建议只在普通设置明显漏字时调整。
-
-## 输出规则
-
-- 默认输出文件名为 `原文件名-OCR.pdf`。
-- 如果目标名称已经存在，程序会自动生成 `原文件名-OCR(1).pdf`、`原文件名-OCR(2).pdf`，避免覆盖旧结果。
-- 指定输出目录不存在时，程序会自动创建。
-- 原生文字 PDF 会先经过抽样检测；具体行为取决于是否启用了页边过滤。
-- 原地覆写模式的保存位置与普通输出模式不同，请在处理后查看界面或终端报告。
-
-## 识别效果检查
-
-下图展示了置信度显影模式，用于观察文字层位置、字号和识别可靠度。它是调试视图，不代表最终隐藏文字层的颜色。
-
-![置信度显影示例](docs/images/recognition-preview.png)
-
-建议完成后检查：
-
-- 搜索正文中的多个关键词；
-- 复制一段文字并确认顺序；
-- 放大查看页眉、页脚、脚注和页码附近；
-- 检查中英文混排及全角标点；
-- 检查奇偶页正文边界是否一致。
-- 竖排文档检查列序是否自右向左、复制顺序是否正确；
-- 倾斜扫描件放大检查隐藏文字层是否跟随原图角度。
-
-## 常见问题
-
-### `ModuleNotFoundError: No module named 'fitz'`
-
-安装的是 `PyMuPDF`：
+运行下面的命令可以查看当前版本全部参数和默认值：
 
 ```powershell
-python -m pip uninstall fitz
-python -m pip install --force-reinstall PyMuPDF
+.\PDFOCR.exe --help
 ```
 
-### Paddle 报告未编译 CUDA，或程序无法使用 `gpu:0`
+## CUDA 安装、调试与测试命令
 
-v32 会自动回退到 CPU 并显示提醒，但速度可能慢一个数量级。需要正常 GPU 速度时，请根据 [PaddlePaddle 官方安装页面](https://www.paddlepaddle.org.cn/install/quick) 重新安装与显卡驱动和 CUDA 匹配的 GPU 版本。
-
-### 首次运行提示无法访问模型源
-
-确认网络可以访问 PaddleOCR 支持的模型源。模型下载完成后会保存在本机缓存中；本仓库不会提交这些模型文件。
-
-### 显存不足或处理速度过慢
-
-先在图形界面降低为 150 或 220 DPI，并缩小指定页码范围。保持默认文字检测边长限制；命令行可用 `--det-limit 1280` 进一步降低占用。关闭不必要的调试窗口，避免同时运行其他 GPU 程序。使用 `--timing` 可以查看各阶段耗时和设备状态。
-
-### 双联页中缝检测不准确
-
-先尝试 `--split-fixed`，让程序按 `--split-ratio` 指定的固定比例切分。装订线偏离中心时可调整比例；不应拆分的封面、目录折页等页面可用 `--split-skip 1,4-6` 跳过。
-
-### 页边过滤误删正文
-
-尝试开启“关闭页边滤除 `-S`”，让程序扫描完整页面，然后人工检查页眉、页脚和页码是否被混入文字层。
-
-### 竖排文字错位
-
-确认已启用 `-V` / `--vertical`。该模式会按自上而下、自右向左写入，并自动跳过横排版面过滤。自身带 PDF 页面旋转、复杂横竖混排、超大字号扉页和连点目录仍可能异常。`--split-rtl` 只改变双联页左右两半的输出顺序，不能代替 `-V`。
-
-### 低分辨率密排小字仍然大量漏识别
-
-可以尝试“300 DPI 强化检测”或命令行 `--dpi 300 --max-pixels 3800 --det-limit 2800 --multi-scale 5`。这些选项会明显增加显存和处理时间，而且不能恢复源图中已经粘连或模糊的笔画。内部测试中双行小注召回率约为 32%，因此不应把强化模式理解为完整识别保证。
-
-### 如何检查打包环境或模型是否完整
-
-运行：
+### 主动准备 CUDA 组件
 
 ```powershell
-python PDFOCR_PaddleV3.py --selftest
+.\PDFOCR.exe --install-cuda
+.\PDFOCR.exe --install-cuda --cuda-source auto
+.\PDFOCR.exe --install-cuda --cuda-source tuna
+.\PDFOCR.exe --install-cuda --cuda-source bfsu
+.\PDFOCR.exe --install-cuda --cuda-source pypi
 ```
 
-它会依次报告模型缓存路径、依赖元数据、Paddle 设备状态，并尝试实例化版面模型和 OCR 模型。该检查可能加载较大模型；首次缺少模型时仍可能需要网络。
+`auto` 会按国内镜像和 PyPI 的预设顺序尝试；另外三个值用于锁定下载源。只有明确执行该命令或在图形界面确认后，程序才会联网下载。
 
-## 隐私与数据
+CUDA 下载日志保存在程序目录下的 `PDFOCR\_internal\CUDA下载日志.txt`，排查下载失败时请先查看该文件。
 
-程序在本地读取和写入 PDF。模型首次下载需要网络，但项目代码没有上传用户 PDF 的功能。仍建议不要把私人 PDF、OCR 输出、模型缓存或日志提交到公开仓库；本项目的 `.gitignore` 已排除常见相关文件。
+### 环境自检
 
-## 项目结构
+```powershell
+.\PDFOCR.exe --selftest
+```
+
+自检会检查模型目录、关键依赖、Paddle 设备以及推理引擎能否正常初始化。提交问题时，建议同时附上自检输出、显卡型号、显卡驱动版本和 Windows 版本。
+
+### 定位识别问题
+
+```powershell
+.\PDFOCR.exe "D:\资料\样本.pdf" --timing -g
+.\PDFOCR.exe "D:\资料\少量样本页.pdf" -c -P
+.\PDFOCR.exe "D:\资料\少量样本页.pdf" -S
+.\PDFOCR.exe "D:\资料\少量样本页.pdf" --legacy-text
+```
+
+- `--timing`：判断时间主要花在拆分、版面分析、OCR 还是文字写入；
+- `-g`：让文字层可见并按识别置信度着色，检查识别质量和落点；
+- `-c`：显示 OpenCV 调试图，检查程序实际读取的页面图像；
+- `-P`：强制把 PDF 页面栅格化后识别，用于对照页面图像提取路径；
+- `-S`：临时关闭页眉页脚过滤，用于判断正文是否被版面分析误删；
+- `--legacy-text`：与旧版文字层写入方式对照；
+- 调试前可先用界面的“页码范围”导出少量样本页，或准备一个只含问题页面的小 PDF，避免每次运行整本书。
+
+## 输出、隐私与联网说明
+
+- PDF 内容在本机处理，程序没有把 PDF 上传到服务器的功能。
+- 正常识别不依赖云端 OCR 服务。
+- 仅在用户确认准备 CUDA 组件或显式运行 `--install-cuda` 时联网下载运算库。
+- 下载项采用固定版本、固定文件大小和 SHA256 校验，并在隔离目录中安全解压。
+- 输出 PDF 保留原扫描图像并加入隐藏文字层；本工具不负责恢复原字体、段落语义、书签或表格结构。
+
+## 校验下载文件
+
+PowerShell 示例：
+
+```powershell
+Get-FileHash .\PDFOCR-v281-Windows-x64.zip -Algorithm SHA256
+Get-FileHash .\PDFOCR-v281-Windows-x64.exe -Algorithm SHA256
+Get-FileHash .\PDFOCR-v281-source.py -Algorithm SHA256
+```
+
+把结果与 Release 页面中的 `SHA256SUMS.txt` 对照。v281 的校验值为：
 
 ```text
-PDFOCR_PaddleV3/
-├── PDFOCR_PaddleV3.py
-├── README.md
-├── CHANGELOG.md
-├── requirements.txt
-├── .gitignore
-├── LICENSE
-└── docs/
-    ├── images/
-    └── superpowers/
+f610440531d23ae122121bf6035115f564711b4f07fb937d2f230a320c2a5223  PDFOCR-v281-Windows-x64.zip
+ffe0857ec1814d071a7cbd3480e458044bd712d9fa933bd3061321febf7f7a7f  PDFOCR-v281-Windows-x64.exe
+7e045db839c2eceee527a5d38c1ac0da936d1a235c96782babe2c86af18d3ca8  PDFOCR-v281-source.py
 ```
 
-## 许可证与致谢
+## 已知限制
 
-本项目代码按照 [GNU General Public License version 3](LICENSE) 发布。代码中保留的版权信息为：
+- 竖排模式必须手动开启，程序不会自动判断整本文档的排版方向。
+- 超大字号扉页、连点目录、复杂横竖混排、自带页面旋转的 PDF 仍可能漏识别或错位。
+- 低分辨率密排小字，尤其双行小注，仍可能大量漏检；强化检测不能恢复源图中已经模糊或粘连的笔画。
+- 大幅插图、跨栏、边注、异形页面或损坏 PDF 可能使正文边界判断失误。可用 `-S` 对照排查。
+- 300 DPI、多尺度检测和低阈值会显著增加显存、内存和处理时间。
+- 双联页拆分会改变输出页数，页码范围和跳过页码仍按拆分前的物理页计算。
+- 原地覆写具有风险，使用 `-I` 前务必备份源文件。
+- 当前 Windows EXE 未进行代码签名，可能触发 SmartScreen 提示。
 
-- Copyright © 2025 Cao Yang
-- Copyright © 2026 Yang Qi
+## 源码目录
 
-本项目依赖 [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)、[PaddlePaddle](https://github.com/PaddlePaddle/Paddle)、[PyMuPDF](https://github.com/pymupdf/PyMuPDF)、[OpenCV](https://github.com/opencv/opencv) 等开源项目。各第三方组件继续适用其各自许可证。
+```text
+PDFOCR_PaddleV3.py   v281 统一源码
+requirements.txt    源码运行所需的主要 Python 依赖
+README.md           使用说明
+CHANGELOG.md        版本工作日志
+SHA256SUMS.txt       v281 Release 文件校验值
+docs/images/        README 截图
+```
 
-## 发布状态
+## 许可证
 
-当前仓库提供可审阅和自行运行的 **v32 源代码版本**，不包含 EXE、CUDA、PaddlePaddle GPU 安装包或模型文件。源码已经加入模型路径、中文安装路径、GPU/CPU 探测、轻量打包版 CUDA 获取和 `--selftest` 等打包准备逻辑，但这些功能不等于已经提供可下载的 Windows 安装包。
+本项目使用 [GNU General Public License v3.0](LICENSE)。使用、修改和再发布时请遵守许可证要求。PaddleOCR、PaddlePaddle、PyMuPDF、OpenCV、Pillow 等第三方组件分别遵循其各自许可证。

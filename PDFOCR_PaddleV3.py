@@ -1,6 +1,15 @@
 # ============================================================================
-#  PDFOCR 273 · 统一源码（唯一树顶）
+#  PDFOCR 281 · 统一源码（透明 CUDA 下载 + 主页面竖排开关）
 # ============================================================================
+
+# 281 版改动：
+#   · CUDA 下载改为用户显式确认、公开来源、固定文件与 SHA-256 校验；
+#     先隔离解压，全部校验通过后才安装，并保留可查看的下载日志。
+#   · 默认下载源为“中国大陆优化”：清华 TUNA -> 北外 BFSU -> PyPI 官方；
+#     用户也可主动固定为其中任意一个来源。
+#   · “竖排文本识别”从高级参数移到主页面，位于指定页码与自动打开之间。
+#   · 延续 280 版 CropBox 纵向补偿及此前全部识别功能。
+#
 #  本文件是 261/262 两条并行分支的合并点。此前的分叉与合并关系如下：
 #
 #      257 打包就绪
@@ -40,7 +49,15 @@
 #       |
 #      272 统一源码  措辞去门类化 + 清晰度档位标明 DPI 与显存需求
 #       |
-#      273 统一源码  <-- 本文件。修好顶部控件行被 pack 压扁的问题；ToolTip 统一复用
+#      273 统一源码  修好顶部控件行被 pack 压扁的问题；ToolTip 统一复用
+#       |
+#      274 统一源码  <-- 本文件。Doctor Cat 形象接入（窗口图标 / 页头四态 / 出错对话框）
+#                        + 修好按钮处理态文字被 disabledforeground 变灰看不清
+#
+#  【打包提示】exe 图标与随包资源：
+#     pyinstaller --icon "assets/app-icons/doctorcat-faithful/doctorcat-faithful-windows-exe-multisize.ico" ^
+#                 --add-data "assets/app-icons/doctorcat-faithful;assets/app-icons/doctorcat-faithful" ...
+#     资源缺失时程序不会崩，只是没有猫（_asset_path + 逐张 try 兜底）。
 #
 #  合并方式：以打包线的 262 统一源码为底，把功能线的补丁按序重放上去
 #  （倾斜校正 13 处 + 竖排 32 处 + 显存 1 处 + 字号上限 1 处，共 47 处）。
@@ -52,8 +69,8 @@
 #    · 界面：高级面板 10 条指令、5 行、顺序与位置全部正确
 #
 #  【往后只有这一条线】。功能改动、打包适配、bug 修复一律往序号更大的
-#  统一源码迭代；A 版 / B 版不再是两份源码，而是同一份源码的两种打包产物，
-#  exe 用 PDFOCR_v273A.exe / PDFOCR_v273B.exe 这样的文件名记录来源即可。
+#  统一源码迭代；公开产物统一使用 PDFOCR-v版本-Windows-x64，不再附加
+#  A/B、完整版、轻量版等后缀。
 #  公开发布版本号（v31/v32）与脚本序号（263/264）的对应关系见 CHANGELOG.md。
 #  历史版本已全部移入同目录的 历史版本/ 子文件夹，主目录只保留本文件
 #  与 CHANGELOG.md，避免再出现"哪个是最新"的疑问。
@@ -244,6 +261,24 @@ r"""
 import os as _os
 import sys as _sys
 
+# GUI 双击启动时，PyInstaller 会在启动器层尽早隐藏自建控制台。若个别
+# Windows Terminal 配置只能最小化而不能隐藏，这行文字会先立即出现，
+# 明确告诉用户程序仍在加载；从已有终端启动的命令行模式不受影响。
+if getattr(_sys, "frozen", False) and len(_sys.argv) <= 1:
+    try:
+        if _sys.stdout is not None:
+            print("PDFOCR 正在打开。AI 引擎初始化需要一定时间，请耐心等待；请不要关闭此窗口。",
+                  flush=True)
+    except Exception:
+        pass
+    try:
+        import ctypes as _early_ct
+        _early_hwnd = _early_ct.windll.kernel32.GetConsoleWindow()
+        if _early_hwnd:
+            _early_ct.windll.user32.ShowWindow(_early_hwnd, 0)
+    except Exception:
+        pass
+
 
 def _app_dir():
     """打包后返回 exe 所在目录；源码运行时返回脚本所在目录。"""
@@ -389,9 +424,24 @@ for _stream_name in ("stdout", "stderr"):
             pass
 
 
-
 # =========================================================================
-# 【258 版 · 轻量版专用】CUDA 运算库首次运行自动获取
+# 【281 版】双击启动时的控制台已在文件最前部处理
+# -------------------------------------------------------------------------
+# 打包时用的是 console=True。这不是笔误：本程序同时要服务两类人 ——
+#   · 普通用户双击图标使用，他们只该看到图形界面，不该看到黑底命令行；
+#   · 技术用户在命令行里跑批处理，他们需要 --timing / --selftest 的输出。
+# 如果改成 console=False（窗口化打包），第二类人就完全拿不到任何输出了，
+# PyInstaller 会把 stdout 换成一个丢弃一切的空写入器。
+#
+# 所以做法是：保留真正的控制台，但在"无参数启动"（即双击）时把这个窗口
+# 藏起来。print / tqdm 照常工作、写进真实的控制台缓冲区，只是不显示。
+# 带参数启动时不隐藏，命令行输出一切如常。
+#
+# 代价：双击时黑窗会闪一下（进程启动到执行这几行之间的几十毫秒）。
+# 这比"技术用户完全没有输出"要好得多。
+# =========================================================================
+# =========================================================================
+# 【281 版】CUDA 运算库按需、安全、透明获取
 # -------------------------------------------------------------------------
 # 背景：paddle 做 AI 推理需要 cuDNN / cuBLAS / cuFFT / cuSOLVER / cuSPARSE
 # 这几套 NVIDIA 计算库，解压后约 3.1 GB。它们**不在显卡驱动里**——装了
@@ -408,18 +458,53 @@ for _stream_name in ("stdout", "stderr"):
 #   来注册 DLL 搜索路径（见 paddle/__init__.py 的 Windows 分支）。
 #   等到 import paddle 之后再补文件就晚了，那时路径已经注册完毕。
 # =========================================================================
-_CUDA_WHEELS = [
-    # (包名, 版本)  —— 版本必须与 paddlepaddle-gpu 编译时所用的一致，
-    # 这里的值取自开发机上 pip 实际安装的 dist-info，不要随意改动。
-    ("nvidia-cudnn-cu12",       "9.9.0.52"),
-    ("nvidia-cublas-cu12",      "12.9.0.13"),
-    ("nvidia-cusparse-cu12",    "12.5.9.5"),
-    ("nvidia-cusolver-cu12",    "11.7.4.40"),
-    ("nvidia-cufft-cu12",       "11.4.0.6"),
-    ("nvidia-curand-cu12",      "10.3.10.19"),
-    ("nvidia-nvjitlink-cu12",   "12.9.86"),
-    ("nvidia-cuda-runtime-cu12", "12.9.37"),
+# 清单固定到 NVIDIA 在 PyPI 发布的 Windows x64 轮子。运行时不再查询
+# PyPI 元数据；文件名、体积和 SHA-256 都随版本审计并写死在发布源码中。
+_CUDA_MANIFEST = [
+    {"package": "nvidia-cudnn-cu12", "version": "9.9.0.52",
+     "filename": "nvidia_cudnn_cu12-9.9.0.52-py3-none-win_amd64.whl",
+     "size": 767785830,
+     "sha256": "d53036b7edad1a85b5d59580defc91e30326746fde21ffc701eb8b4d4695eca1",
+     "url": "https://files.pythonhosted.org/packages/6f/5c/f77147ce7e27a4e9087fb34b0539ff085c68e7093e96ee85576fe31fe064/nvidia_cudnn_cu12-9.9.0.52-py3-none-win_amd64.whl"},
+    {"package": "nvidia-cublas-cu12", "version": "12.9.0.13",
+     "filename": "nvidia_cublas_cu12-12.9.0.13-py3-none-win_amd64.whl",
+     "size": 552611067,
+     "sha256": "a525014e22b8adb79d04b70f69fd53d09c7b851002b3d332cd601da3a37276fd",
+     "url": "https://files.pythonhosted.org/packages/08/79/0cf1ed0ccea47067cc2140ab9bd38100de574824a6dc9e12151fb9b39c59/nvidia_cublas_cu12-12.9.0.13-py3-none-win_amd64.whl"},
+    {"package": "nvidia-cusparse-cu12", "version": "12.5.9.5",
+     "filename": "nvidia_cusparse_cu12-12.5.9.5-py3-none-win_amd64.whl",
+     "size": 362510485,
+     "sha256": "228d7ee34c8e3622fa58aa7a53c6f5d05f5d0c6980173c46e308129b66910c88",
+     "url": "https://files.pythonhosted.org/packages/4e/de/d771533939aeea1433a338825190453f9fcbf235370b8e7161522fd89a13/nvidia_cusparse_cu12-12.5.9.5-py3-none-win_amd64.whl"},
+    {"package": "nvidia-cusolver-cu12", "version": "11.7.4.40",
+     "filename": "nvidia_cusolver_cu12-11.7.4.40-py3-none-win_amd64.whl",
+     "size": 320275500,
+     "sha256": "288993d2c3bd8167baa3f7b581e219175db576a54d2c36ad62b163a07de923c5",
+     "url": "https://files.pythonhosted.org/packages/b6/c6/0e3459479a34e7d7cde75b6990953b0873781eac05edfafcd761fe8918c2/nvidia_cusolver_cu12-11.7.4.40-py3-none-win_amd64.whl"},
+    {"package": "nvidia-cufft-cu12", "version": "11.4.0.6",
+     "filename": "nvidia_cufft_cu12-11.4.0.6-py3-none-win_amd64.whl",
+     "size": 200095584,
+     "sha256": "26cd694ef8472efac5e73466d05d5b356f80eafe849095eb6bf4d7f93390557d",
+     "url": "https://files.pythonhosted.org/packages/4d/fe/b83d984f5f7420e2d43d148fe2379775d6f53d3e0a9057d998b16939ffc8/nvidia_cufft_cu12-11.4.0.6-py3-none-win_amd64.whl"},
+    {"package": "nvidia-curand-cu12", "version": "10.3.10.19",
+     "filename": "nvidia_curand_cu12-10.3.10.19-py3-none-win_amd64.whl",
+     "size": 68774847,
+     "sha256": "e8129e6ac40dc123bd948e33d3e11b4aa617d87a583fa2f21b3210e90c743cde",
+     "url": "https://files.pythonhosted.org/packages/e5/98/1bd66fd09cbe1a5920cb36ba87029d511db7cca93979e635fd431ad3b6c0/nvidia_curand_cu12-10.3.10.19-py3-none-win_amd64.whl"},
+    {"package": "nvidia-nvjitlink-cu12", "version": "12.9.86",
+     "filename": "nvidia_nvjitlink_cu12-12.9.86-py3-none-win_amd64.whl",
+     "size": 35584936,
+     "sha256": "cc6fcec260ca843c10e34c936921a1c426b351753587fdd638e8cff7b16bb9db",
+     "url": "https://files.pythonhosted.org/packages/dd/7e/2eecb277d8a98184d881fb98a738363fd4f14577a4d2d7f8264266e82623/nvidia_nvjitlink_cu12-12.9.86-py3-none-win_amd64.whl"},
+    {"package": "nvidia-cuda-runtime-cu12", "version": "12.9.37",
+     "filename": "nvidia_cuda_runtime_cu12-12.9.37-py3-none-win_amd64.whl",
+     "size": 3591221,
+     "sha256": "84a750e4d46a32e0b8adc4efdd4021fe49741b1cbbee72421c5400ff9865dd83",
+     "url": "https://files.pythonhosted.org/packages/b8/1c/c6352858f84e5203279300a9fb4f9d7613cbab5fd4afd78613bb9bcdc64c/nvidia_cuda_runtime_cu12-12.9.37-py3-none-win_amd64.whl"},
 ]
+
+# 兼容旧代码和诊断输出。
+_CUDA_WHEELS = [(item["package"], item["version"]) for item in _CUDA_MANIFEST]
 
 # 判断"已经装好了"的标志文件：挑两个最大、最不可能缺失的
 _CUDA_SENTINELS = [
@@ -427,71 +512,127 @@ _CUDA_SENTINELS = [
     "nvidia/cudnn/bin/cudnn64_9.dll",
 ]
 
-# -------------------------------------------------------------------------
-# 下载源清单
-# -------------------------------------------------------------------------
-# 这些全部是**面向公众开放**的 PyPI 公共镜像，不需要教育网，任何人都能直连。
-# 它们镜像的是同一批文件，只是各家的 URL 前缀不同，把官方地址里的
-# "https://files.pythonhosted.org/" 换成对应前缀即可。
-#
-# 实测同一个文件的下载速度（2026-08，家庭宽带）：
-#     清华 TUNA   8.6 MB/s      北外 BFSU   5.7 MB/s
-#     南大 NJU    3.8 MB/s      腾讯云      3.1 MB/s
-#     华为云      2.9 MB/s      中科大      2.6 MB/s
-#     阿里云      1.2 MB/s      PyPI 官方   1.0 MB/s
-#
-# 差距接近 9 倍（2.2 GB 换算成 4 分钟 vs 37 分钟），而且任何单一镜像都可能
-# 临时故障或调整路径。所以不写死任何一个源：启动时对所有源做一次小体积
-# 测速，挑最快的用；下载中途某个源断了，自动换下一个继续。
-# -------------------------------------------------------------------------
 _PYPI_HOST = "https://files.pythonhosted.org/"
-_MIRRORS = [
-    ("清华 TUNA",  "https://pypi.tuna.tsinghua.edu.cn/"),
-    ("北外 BFSU",  "https://mirrors.bfsu.edu.cn/pypi/web/"),
-    ("南京大学",   "https://mirror.nju.edu.cn/pypi/web/"),
-    ("腾讯云",     "https://mirrors.cloud.tencent.com/pypi/"),
-    ("华为云",     "https://repo.huaweicloud.com/repository/pypi/"),
-    ("中科大",     "https://pypi.mirrors.ustc.edu.cn/web/"),
-    ("阿里云",     "https://mirrors.aliyun.com/pypi/web/"),
-    ("PyPI 官方源", _PYPI_HOST),
-]
+_CUDA_SOURCES = {
+    "tuna": ("清华大学 TUNA 镜像", "https://pypi.tuna.tsinghua.edu.cn/"),
+    "bfsu": ("北京外国语大学 BFSU 镜像", "https://mirrors.bfsu.edu.cn/pypi/web/"),
+    "pypi": ("PyPI 官方源（NVIDIA 发布）", _PYPI_HOST),
+}
+_CUDA_SOURCE_DISPLAY = {
+    "自动选择（推荐，中国大陆优化）": "auto",
+    "PyPI 官方源（NVIDIA 发布）": "pypi",
+    "清华大学 TUNA 镜像": "tuna",
+    "北京外国语大学 BFSU 镜像": "bfsu",
+}
 
 
-def _pick_fastest_mirror(sample_url, report):
-    """
-    拿一个真实文件的前 2 MB 对所有源测速，返回 (源名, 前缀)。
-    测速本身只花几秒，却能把后面 2.2 GB 的下载时间压缩数倍，非常划算。
-    全部失败时回落到官方源，让后续下载去报真正的错。
-    """
-    import urllib.request
-    import time as _t
+def _cuda_source_candidates(choice):
+    """返回用户准许使用的下载源；auto 按国内网络友好的固定顺序回退。"""
+    choice = (choice or "auto").lower()
+    keys = ["tuna", "bfsu", "pypi"] if choice == "auto" else [choice]
+    if any(key not in _CUDA_SOURCES for key in keys):
+        raise ValueError("未知 CUDA 下载源：%s" % choice)
+    return [(key, _CUDA_SOURCES[key][0], _CUDA_SOURCES[key][1]) for key in keys]
 
-    tail = sample_url.split(_PYPI_HOST, 1)[1] if _PYPI_HOST in sample_url else None
-    if tail is None:
-        return _MIRRORS[-1]
 
-    best = None
-    for idx, (name, host) in enumerate(_MIRRORS):
-        report(0.0, "正在测速下载源 (%d/%d)：%s" % (idx + 1, len(_MIRRORS), name))
-        try:
-            req = urllib.request.Request(host + tail,
-                                         headers={"Range": "bytes=0-2097151"})
-            t0 = _t.time()
-            with urllib.request.urlopen(req, timeout=15) as r:
-                blob = r.read()
-            dt = _t.time() - t0
-            if dt <= 0 or not blob:
+def _cuda_cli_download_requested(argv):
+    """命令行只有显式给出 --install-cuda 才允许联网下载。"""
+    return "--install-cuda" in argv
+
+
+def _cuda_source_from_argv(argv):
+    for index, arg in enumerate(argv):
+        if arg.startswith("--cuda-source="):
+            value = arg.split("=", 1)[1]
+            _cuda_source_candidates(value)
+            return value
+        if arg == "--cuda-source" and index + 1 < len(argv):
+            value = argv[index + 1]
+            _cuda_source_candidates(value)
+            return value
+    return "auto"
+
+
+def _verify_file_sha256(path, expected):
+    import hashlib
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().lower() == expected.lower()
+
+
+def _extract_cuda_wheel_safely(wheel_path, target_root):
+    """仅释放 nvidia/，并在写文件前整体拒绝路径穿越与符号链接。"""
+    import shutil
+    import stat
+    import zipfile
+    from pathlib import Path, PurePosixPath
+
+    target_root = Path(target_root).resolve()
+    with zipfile.ZipFile(wheel_path) as archive:
+        allowed = []
+        for info in archive.infolist():
+            parts = PurePosixPath(info.filename).parts
+            if not parts or parts[0] != "nvidia":
                 continue
-            speed = len(blob) / 1048576 / dt
-            if best is None or speed > best[0]:
-                best = (speed, name, host)
-        except Exception:
-            continue
+            if any(part in ("", ".", "..") for part in parts):
+                raise ValueError("CUDA 安装包含不安全路径：%s" % info.filename)
+            if info.filename.startswith(("/", "\\")) or ":" in parts[0]:
+                raise ValueError("CUDA 安装包含绝对路径：%s" % info.filename)
+            mode = (info.external_attr >> 16) & 0xFFFF
+            if stat.S_ISLNK(mode):
+                raise ValueError("CUDA 安装包含符号链接：%s" % info.filename)
+            destination = target_root.joinpath(*parts).resolve()
+            try:
+                destination.relative_to(target_root)
+            except ValueError:
+                raise ValueError("CUDA 安装包路径越界：%s" % info.filename)
+            allowed.append((info, destination))
 
-    if best is None:
-        return _MIRRORS[-1]
-    report(0.0, "选定下载源：%s（实测 %.1f MB/s）" % (best[1], best[0]))
-    return (best[1], best[2])
+        if not allowed:
+            raise ValueError("CUDA 安装包中没有 nvidia/ 运行库")
+        for info, destination in allowed:
+            if info.is_dir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as source, open(destination, "wb") as output:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+
+
+def _cuda_manifest_details():
+    lines = ["发布者：NVIDIA CUDA Installer Team（经 PyPI 发布）", ""]
+    for item in _CUDA_MANIFEST:
+        lines.extend([
+            "%s  %s  %.1f MB" % (item["package"], item["version"], item["size"] / 1048576),
+            "SHA-256: %s" % item["sha256"],
+            "官方地址: %s" % item["url"], "",
+        ])
+    return "\n".join(lines)
+
+
+# =========================================================================
+# 【274 版新增】应用形象（Doctor Cat）资源定位
+# -------------------------------------------------------------------------
+# 素材放在 assets/app-icons/doctorcat-faithful/ 下：
+#   · doctorcat-faithful-windows-exe-multisize.ico  窗口 / 任务栏 / exe 图标
+#   · ui/doctorcat-{idle,puzzle,smile,defeated}-header.png   71x84，标题右侧
+#   · ui/doctorcat-{...}-dialog.png                         61x72，对话框内
+# ui/ 下这批是按四张原图的 alpha 边界裁齐后统一缩放的，四态严格重合，
+# 切换表情时不会有位移或大小跳动。
+#
+# 打包成 exe 后资源被解到 _MEIPASS，源码运行时就在脚本同级目录，
+# 这里统一处理，调用方不必关心。
+# =========================================================================
+def _asset_path(*parts):
+    base = getattr(_sys, "_MEIPASS", None)
+    if not base:
+        try:
+            base = _os.path.dirname(_os.path.abspath(__file__))
+        except NameError:
+            base = _os.getcwd()
+    return _os.path.join(base, "assets", "app-icons", "doctorcat-faithful", *parts)
 
 
 def _cuda_root():
@@ -510,6 +651,36 @@ def _cuda_ready(root):
                for p in _CUDA_SENTINELS)
 
 
+def _system_has_cuda_libs():
+    """
+    【277 版新增】判断这台机器上是否已经有可用的 CUDA 运算库。
+
+    做法：不扫描硬盘，只把库名交给 Windows 的加载器，让它按标准顺序
+    （程序目录 -> System32 -> PATH 上的目录）去找。找得到就说明系统里
+    本来就有，paddle 运行时也会用同一套，我们再下载一份纯属浪费 2.2 GB。
+
+    为什么不遍历硬盘找 DLL：
+      · 慢 —— 全盘遍历动辄几分钟；
+      · 会撞上其他用户目录的"拒绝访问"，得处理一堆权限异常；
+      · 更要紧的是，"遍历磁盘搜索 DLL"正是杀毒软件判定可疑行为的典型
+        特征，普通用户很可能直接看到安全警告。
+    而 WinDLL() 只是一次普通的动态库加载，不枚举、不遍历、不需要提权。
+
+    版本安全性：CUDA 系列的 DLL 文件名自带主版本号 ——
+    cublasLt64_12 就是 CUDA 12.x，cudnn64_9 就是 cuDNN 9.x。
+    能按这个名字加载成功，主版本必然是对的（本程序的 paddle 3.3.0
+    正是针对 CUDA 12.9 / cuDNN 9.9 构建）。次版本的细微差异理论上仍
+    可能有影响，但主版本已经卡住了绝大部分风险。
+    """
+    try:
+        import ctypes
+        for _dll in ("cublasLt64_12.dll", "cudnn64_9.dll"):
+            ctypes.WinDLL(_dll)
+        return True
+    except Exception:
+        return False
+
+
 def _has_nvidia_driver():
     """轻量探测：能加载 nvcuda.dll 就说明装了 N 卡驱动。不依赖 paddle。"""
     try:
@@ -520,82 +691,107 @@ def _has_nvidia_driver():
         return False
 
 
-def _fetch_cuda_libraries(root, report):
-    """把 8 个轮子下载下来，解压出其中的 nvidia/ 部分。report(阶段, 已完成比例, 文字)"""
-    import json
-    import urllib.request
-    import zipfile
+def _fetch_cuda_libraries(root, report, source="auto"):
+    """按固定清单下载、验哈希、隔离解压，全部成功后一次性安装。"""
+    import datetime
+    import shutil
     import tempfile
+    import urllib.request
 
-    # 先解析出每个轮子的真实下载地址和体积
-    plan = []
-    total_bytes = 0
-    for i, (pkg, ver) in enumerate(_CUDA_WHEELS):
-        report(0.0, "正在获取下载地址 (%d/%d)：%s" % (i + 1, len(_CUDA_WHEELS), pkg))
-        url = None
-        size = 0
-        with urllib.request.urlopen(
-                "https://pypi.org/pypi/%s/%s/json" % (pkg, ver), timeout=60) as r:
-            meta = json.load(r)
-        for f in meta["urls"]:
-            if "win_amd64" in f["filename"]:
-                url, size = f["url"], f["size"]
-                break
-        if not url:
-            raise RuntimeError("找不到 %s %s 的 Windows 安装包" % (pkg, ver))
-        plan.append((pkg, url, size))
-        total_bytes += size
+    total_bytes = sum(item["size"] for item in _CUDA_MANIFEST)
+    candidates = _cuda_source_candidates(source)
+    log_path = _os.path.join(root, "CUDA下载日志.txt")
+    stage = tempfile.mkdtemp(prefix=".pdfocr-cuda-", dir=root)
+    payload = _os.path.join(stage, "payload")
+    _os.makedirs(payload, exist_ok=True)
 
-    # 实测挑最快的源
-    src_name, src_host = _pick_fastest_mirror(plan[-1][1], report)
-    report(0.0, "下载源：%s   总计约 %.0f MB" % (src_name, total_bytes / 1048576))
+    def log(message):
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_path, "a", encoding="utf-8") as stream:
+            stream.write("[%s] %s\n" % (stamp, message))
 
+    log("开始 CUDA 安装；用户选择=%s；总下载=%d 字节" % (source, total_bytes))
     done_bytes = 0
-    for pkg, url, size in plan:
-        tmp = tempfile.NamedTemporaryFile(suffix=".whl", delete=False)
-        tmp.close()
-        try:
-            # 先用选定的源；失败就按清单顺序换源重试，全部失败才抛错。
-            # 单个镜像临时抽风不至于让整个安装流程前功尽弃。
-            hosts = [src_host] + [h for _, h in _MIRRORS if h != src_host]
-            last_err = None
-            for hi, host in enumerate(hosts):
-                real = url.replace(_PYPI_HOST, host)
+    try:
+        for index, item in enumerate(_CUDA_MANIFEST, 1):
+            wheel_path = _os.path.join(stage, item["filename"])
+            last_error = None
+            downloaded = False
+            tail = item["url"].split(_PYPI_HOST, 1)[1]
+            for key, name, host in candidates:
+                real_url = host + tail
+                report(done_bytes / total_bytes,
+                       "下载源：%s；正在获取 %s (%d/%d)" %
+                       (name, item["package"], index, len(_CUDA_MANIFEST)))
+                log("下载 %s；来源=%s；URL=%s" % (item["package"], name, real_url))
                 try:
-                    with urllib.request.urlopen(real, timeout=120) as r,                             open(tmp.name, "wb") as f:
-                        got = 0
+                    got = 0
+                    request = urllib.request.Request(
+                        real_url, headers={"User-Agent": "PDFOCR/281 (+GitHub release)"})
+                    with urllib.request.urlopen(request, timeout=120) as response, \
+                            open(wheel_path, "wb") as output:
                         while True:
-                            chunk = r.read(1024 * 512)
+                            chunk = response.read(1024 * 1024)
                             if not chunk:
                                 break
-                            f.write(chunk)
+                            output.write(chunk)
                             got += len(chunk)
-                            frac = (done_bytes + got) / total_bytes
-                            report(frac, "正在下载 %s   %.0f/%.0f MB   总进度 %.0f%%"
-                                   % (pkg, got / 1048576, size / 1048576, frac * 100))
-                    last_err = None
+                            fraction = min(1.0, (done_bytes + got) / total_bytes)
+                            report(fraction,
+                                   "%s：%.0f/%.0f MB；总进度 %.0f%%" %
+                                   (item["package"], got / 1048576,
+                                    item["size"] / 1048576, fraction * 100))
+                    if got != item["size"]:
+                        raise RuntimeError("文件大小不符：应为 %d，实际 %d" %
+                                           (item["size"], got))
+                    if not _verify_file_sha256(wheel_path, item["sha256"]):
+                        raise RuntimeError("SHA-256 校验失败，文件可能损坏或被篡改")
+                    log("校验通过 %s；字节=%d；SHA-256=%s" %
+                        (item["filename"], got, item["sha256"]))
+                    downloaded = True
                     break
-                except Exception as e:
-                    last_err = e
-                    if hi + 1 < len(hosts):
-                        report((done_bytes) / total_bytes,
-                               "下载源异常，正在切换备用源重试 %s ..." % pkg)
-            if last_err is not None:
-                raise last_err
-            report((done_bytes + size) / total_bytes, "正在解压 %s ..." % pkg)
-            with zipfile.ZipFile(tmp.name) as z:
-                members = [n for n in z.namelist() if n.startswith("nvidia/")]
-                z.extractall(root, members=members)
-        finally:
-            try:
-                _os.remove(tmp.name)
-            except Exception:
-                pass
-        done_bytes += size
+                except Exception as error:
+                    last_error = error
+                    log("来源失败 %s / %s：%s: %s" %
+                        (item["package"], name, type(error).__name__, error))
+                    try:
+                        _os.remove(wheel_path)
+                    except Exception:
+                        pass
+                    if source == "auto" and key != candidates[-1][0]:
+                        report(done_bytes / total_bytes, "当前来源失败，切换下一项已公开来源…")
+            if not downloaded:
+                raise RuntimeError("%s 下载失败：%s" % (item["package"], last_error))
 
-    if not _cuda_ready(root):
-        raise RuntimeError("下载完成但校验未通过，可能是文件损坏，请删除程序目录下的 "
-                           "nvidia 文件夹后重试。")
+            report((done_bytes + item["size"]) / total_bytes,
+                   "哈希已通过，正在安全解压 %s" % item["package"])
+            _extract_cuda_wheel_safely(wheel_path, payload)
+            _os.remove(wheel_path)
+            done_bytes += item["size"]
+
+        if not _cuda_ready(payload):
+            raise RuntimeError("隔离区完整性校验失败，未修改现有程序文件")
+
+        target = _os.path.join(root, "nvidia")
+        staged_nvidia = _os.path.join(payload, "nvidia")
+        backup = _os.path.join(stage, "previous-nvidia")
+        if _os.path.exists(target):
+            _os.replace(target, backup)
+        try:
+            _os.replace(staged_nvidia, target)
+            if not _cuda_ready(root):
+                raise RuntimeError("安装后的 CUDA 运行库校验失败")
+        except Exception:
+            if _os.path.exists(target):
+                shutil.rmtree(target, ignore_errors=True)
+            if _os.path.exists(backup):
+                _os.replace(backup, target)
+            raise
+        if _os.path.exists(backup):
+            shutil.rmtree(backup, ignore_errors=True)
+        log("CUDA 安装完成；目标=%s" % target)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
 
 
 def _ensure_cuda_libraries():
@@ -603,14 +799,23 @@ def _ensure_cuda_libraries():
     root = _cuda_root()
     if _cuda_ready(root):
         return True
+
+    # 【277 版】程序目录里没有，先看看这台机器上本来有没有。
+    # 装过 paddlepaddle-gpu / PyTorch 等的机器通常已经带了同一套运算库，
+    # 命中的话直接省掉 2.2 GB 下载。
+    if _system_has_cuda_libs():
+        print("   [i] 检测到本机已有可用的 NVIDIA 运算库，跳过下载。")
+        return True
+
     if not _has_nvidia_driver():
         # 没有 N 卡，下 2.2 GB 也没意义，直接放行由后续的自检去提示用户
         return False
 
-    need_mb = 2204
+    need_mb = int(round(sum(item["size"] for item in _CUDA_MANIFEST) / 1048576))
 
     # ==================================================================
-    # 【262 版修正】命令行 / 批处理场景绝不能弹出 GUI 对话框
+    # 命令行 / 批处理场景绝不能弹出 GUI 对话框，也不能把“传了任意参数”
+    # 当作下载许可。只有 --install-cuda 是明确同意联网和写入程序目录。
     # ------------------------------------------------------------------
     # 旧写法只要 tkinter 能导入就弹 messagebox.askyesno 等人点"是"。
     # 双击启动时这是对的，但用命令行或脚本调用时，对话框后面根本没有人，
@@ -627,6 +832,16 @@ def _ensure_cuda_libraries():
         return False
 
     _is_cli = len(_sys.argv) > 1
+    if _is_cli and not _cuda_cli_download_requested(_sys.argv):
+        print("   [i] CUDA 运算库尚未安装；本次未联网下载。")
+        print("       如需安装，请明确运行：PDFOCR.exe --install-cuda")
+        print("       可追加 --cuda-source auto|pypi|tuna|bfsu 选择来源。")
+        return False
+    try:
+        _chosen_source = _cuda_source_from_argv(_sys.argv) if _is_cli else "auto"
+    except ValueError as _source_error:
+        print("   [!] %s" % _source_error)
+        return False
     gui = False
     if not _is_cli:
         try:
@@ -637,32 +852,184 @@ def _ensure_cuda_libraries():
             gui = False
 
     if gui:
+        # ==============================================================
+        # 【278 版修正】首次运行的询问窗必须是"找得到"的
+        # --------------------------------------------------------------
+        # 旧写法是 root_win.withdraw() + messagebox.askyesno()，两个后果：
+        #   1) 根窗口被隐藏，这个对话框在任务栏上没有任何图标；
+        #   2) 对话框不置顶，浏览器、资源管理器随便一个窗口就把它盖住。
+        # 实测（真实双击启动，非从终端拉起）：对话框弹出后静静等了 95 秒
+        # 无人应答，下载一个字节都没开始。用户看到的现象是"双击没反应、
+        # 什么都不加载"——其实程序在等一个他根本看不见的问题。
+        #
+        # 现在改成一个正经窗口：居中、置顶、任务栏有图标、按钮写清楚，
+        # 关窗口等同于"暂不下载"。进度显示也复用同一个窗口，
+        # 这样从头到尾任务栏上始终有一个可点回来的入口。
+        # ==============================================================
+        # ==============================================================
+        # 【279 版】视觉与主界面统一
+        # --------------------------------------------------------------
+        # 278 把窗口做成了"能被看见"，但用的是 Tk 默认灰底样式，和主界面
+        # 那套白底 + 微软雅黑 + 黑色主按钮的语言完全不搭，像另一个软件弹
+        # 出来的东西。这里改成同一套：白底 #FFFFFF、标题微软雅黑加粗、
+        # 主按钮 #111111 白字、次按钮白底细边框、窗口图标用 Doctor Cat，
+        # 左侧放一张 Doctor Cat 对话形象，和主界面保持同一个"人"。
+        #
+        # 按钮文案也从"开始准备（推荐）"改成"开始下载"——前者要用户自己
+        # 转译成"哦原来是要下载东西"，多一层理解成本，而这句话上面已经
+        # 讲清楚了要下载什么、多大。按钮就该直说它会做什么。
+        # ==============================================================
         root_win = tk.Tk()
-        root_win.withdraw()
-        ok = messagebox.askyesno(
-            "首次运行：需要获取 AI 运算库",
-            "检测到你的电脑装有 NVIDIA 显卡。\n\n"
-            "本程序需要一套 NVIDIA 官方运算库（cuDNN / cuBLAS 等）才能\n"
-            "调用显卡加速。这套库体积较大（约 %d MB），未随程序打包，\n"
-            "需要现在从官方源下载一次。\n\n"
-            "· 只需下载这一次，之后启动会直接使用\n"
-            "· 下载源为 PyPI 官方源 / 清华大学镜像，均为公开地址\n"
-            "· 请保持网络畅通，中途可以关闭程序，下次会重新开始\n\n"
-            "现在开始下载吗？" % need_mb)
-        if not ok:
-            root_win.destroy()
-            return False
+        root_win.title("PDF 文字识别工具 · 首次运行")
+        root_win.configure(bg="#FFFFFF")
+        root_win.resizable(False, False)
+        _W, _H = 680, 500
+        try:
+            _sw = root_win.winfo_screenwidth()
+            _sh = root_win.winfo_screenheight()
+            root_win.geometry("%dx%d+%d+%d" % (_W, _H,
+                              max(0, (_sw - _W) // 2), max(0, (_sh - _H) // 3)))
+        except Exception:
+            root_win.geometry("%dx%d" % (_W, _H))
+        # 窗口/任务栏图标与主界面一致
+        try:
+            root_win.iconbitmap(_asset_path("doctorcat-faithful-windows-exe-multisize.ico"))
+        except Exception:
+            pass
 
-        win = tk.Toplevel(root_win)
-        win.title("正在获取 AI 运算库")
-        win.geometry("520x150")
-        win.resizable(False, False)
-        tk.Label(win, text="首次运行需要下载 NVIDIA 运算库，请稍候…",
-                 font=("微软雅黑", 10)).pack(pady=(18, 6))
-        bar = ttk.Progressbar(win, length=460, mode="determinate", maximum=1000)
-        bar.pack(pady=4)
-        lbl = tk.Label(win, text="准备中…", font=("微软雅黑", 8), fg="#666666")
+        _ans = {"ok": False, "source": "auto"}
+
+        _head = tk.Frame(root_win, bg="#FFFFFF")
+        _head.pack(fill="x", padx=34, pady=(24, 6))
+        try:
+            root_win._cat_img = tk.PhotoImage(
+                file=_asset_path("ui", "doctorcat-idle-dialog.png"))
+            tk.Label(_head, image=root_win._cat_img, bg="#FFFFFF").pack(side="left", padx=(0, 16))
+        except Exception:
+            pass
+        _txt = tk.Frame(_head, bg="#FFFFFF")
+        _txt.pack(side="left", anchor="w")
+        tk.Label(_txt, text="首次运行，需要下载 AI 运算库",
+                 font=("微软雅黑", 13, "bold"), bg="#FFFFFF", fg="#111111"
+                 ).pack(anchor="w")
+        tk.Label(_txt, text="只需下载这一次，之后每次打开都会直接使用",
+                 font=("微软雅黑", 9), bg="#FFFFFF", fg="#888888"
+                 ).pack(anchor="w", pady=(4, 0))
+
+        tk.Label(root_win, justify="left", bg="#FFFFFF", fg="#333333",
+                 font=("微软雅黑", 9),
+                 text=("检测到你的电脑装有 NVIDIA 显卡。本程序依靠显卡做 AI 识别，\n"
+                       "需要一套 NVIDIA 官方运算库（cuDNN / cuBLAS 等）。\n\n"
+                       "这套库约 %d MB，没有随程序一起打包，需要现在下载一次。\n"
+                       "下载后逐项校验固定 SHA-256，通过后才会安装。\n"
+                       "保存位置：%s\n"
+                       "下载完成后，主界面会自动打开。" % (need_mb, root))
+                 ).pack(padx=36, anchor="w", pady=(14, 0))
+
+        _source_box = tk.Frame(root_win, bg="#FFFFFF")
+        _source_box.pack(fill="x", padx=36, pady=(14, 0))
+        tk.Label(_source_box, text="下载来源：", font=("微软雅黑", 9, "bold"),
+                 bg="#FFFFFF", fg="#333333").pack(side="left")
+        _source_var = tk.StringVar(value="自动选择（推荐，中国大陆优化）")
+        _source_combo = ttk.Combobox(
+            _source_box, textvariable=_source_var, state="readonly", width=34,
+            values=list(_CUDA_SOURCE_DISPLAY.keys()), font=("微软雅黑", 9))
+        _source_combo.pack(side="left", padx=(8, 0))
+
+        def _show_manifest():
+            messagebox.showinfo("CUDA 组件与安全校验信息", _cuda_manifest_details(),
+                                parent=root_win)
+
+        tk.Button(root_win, text="查看组件、官方地址及 SHA-256",
+                  command=_show_manifest, bg="#FFFFFF", fg="#0078D4",
+                  activebackground="#FFFFFF", activeforeground="#005A9E",
+                  font=("微软雅黑", 9), relief="flat", cursor="hand2"
+                  ).pack(anchor="w", padx=34, pady=(8, 0))
+
+        _btns = tk.Frame(root_win, bg="#FFFFFF")
+        _btns.pack(side="bottom", pady=22)
+
+        def _yes():
+            _ans["ok"] = True
+            _ans["source"] = _CUDA_SOURCE_DISPLAY[_source_var.get()]
+            root_win.quit()
+
+        def _no():
+            _ans["ok"] = False
+            root_win.quit()
+
+        # 主按钮：与主界面「INITIALIZE SEQUENCE」同款黑底白字
+        tk.Button(_btns, text="开始下载", command=_yes,
+                  bg="#111111", fg="#FFFFFF", font=("微软雅黑", 11, "bold"),
+                  activebackground="#333333", activeforeground="#FFFFFF",
+                  relief="flat", width=16, height=2, cursor="hand2"
+                  ).pack(side="left", padx=10)
+        # 次按钮：与主界面「选择文件」同款白底细边框
+        tk.Button(_btns, text="暂不下载", command=_no,
+                  bg="#FFFFFF", fg="#333333", font=("微软雅黑", 9),
+                  relief="solid", bd=1, width=12, height=2, cursor="hand2"
+                  ).pack(side="left", padx=10)
+        root_win.protocol("WM_DELETE_WINDOW", _no)
+
+        # 置顶 + 抢焦点：确保它一定出现在用户眼前，而不是藏在别的窗口后面
+        try:
+            root_win.attributes("-topmost", True)
+        except Exception:
+            pass
+        root_win.lift()
+        try:
+            root_win.focus_force()
+        except Exception:
+            pass
+
+        root_win.mainloop()          # 阻塞，直到用户按下按钮或关窗
+
+        if not _ans["ok"]:
+            try:
+                root_win.destroy()
+            except Exception:
+                pass
+            return False
+        _chosen_source = _ans["source"]
+
+        # 用户同意了：清空这个窗口的内容，原地改造成进度窗
+        for _c in root_win.winfo_children():
+            _c.destroy()
+        win = root_win
+        win.title("正在下载 AI 运算库 · 请勿关闭")
+        win.configure(bg="#FFFFFF")
+        win.geometry("600x230")
+        _ph = tk.Frame(win, bg="#FFFFFF")
+        _ph.pack(pady=(26, 6))
+        try:
+            win._cat_dl = tk.PhotoImage(
+                file=_asset_path("ui", "doctorcat-puzzle-dialog.png"))
+            tk.Label(_ph, image=win._cat_dl, bg="#FFFFFF").pack(side="left", padx=(0, 14))
+        except Exception:
+            pass
+        _pt = tk.Frame(_ph, bg="#FFFFFF")
+        _pt.pack(side="left", anchor="w")
+        tk.Label(_pt, text="正在下载 AI 运算库…", font=("微软雅黑", 12, "bold"),
+                 bg="#FFFFFF", fg="#111111").pack(anchor="w")
+        tk.Label(_pt, text="完成后主界面会自动打开，请不要关闭本窗口",
+                 font=("微软雅黑", 9), bg="#FFFFFF", fg="#888888"
+                 ).pack(anchor="w", pady=(4, 0))
+        bar = ttk.Progressbar(win, length=520, mode="determinate", maximum=1000)
+        bar.pack(pady=(10, 4))
+        lbl = tk.Label(win, text="准备中…", font=("微软雅黑", 8),
+                       bg="#FFFFFF", fg="#666666")
         lbl.pack(pady=4)
+        _log_path = _os.path.join(root, "CUDA下载日志.txt")
+
+        def _open_log():
+            try:
+                _os.startfile(_log_path)
+            except Exception:
+                messagebox.showinfo("下载日志", "日志保存位置：\n" + _log_path, parent=win)
+
+        tk.Button(win, text="打开下载日志", command=_open_log,
+                  bg="#FFFFFF", fg="#666666", relief="flat",
+                  font=("微软雅黑", 8), cursor="hand2").pack()
         win.update()
 
         def report(frac, msg):
@@ -676,12 +1043,13 @@ def _ensure_cuda_libraries():
         print("\n" + "=" * 62)
         print("  首次运行：需要获取 NVIDIA 运算库（约 %d MB）" % need_mb)
         print("  这些是 cuDNN / cuBLAS 等公开的官方运算库，未随程序打包。")
-        print("  会自动挑选最快的公共镜像下载，只需下载这一次。")
-        print("  如果不想现在下载，可加 --skip-cuda-fetch 跳过。")
+        print("  用户已显式允许下载；每个文件都会按固定 SHA-256 校验。")
+        print("  下载源选项：%s" % _chosen_source)
+        print("  安装位置：%s" % root)
         print("=" * 62)
 
     try:
-        _fetch_cuda_libraries(root, report)
+        _fetch_cuda_libraries(root, report, source=_chosen_source)
         okflag = True
     except Exception as e:
         okflag = False
@@ -693,6 +1061,8 @@ def _ensure_cuda_libraries():
             print("\n   下载失败：" + err)
     if gui:
         try:
+            # 278 版起 win 与 root_win 是同一个窗口，销毁一次即可；
+            # 这里保留两次调用并容错，兼容两种情况。
             win.destroy()
             root_win.destroy()
         except Exception:
@@ -702,7 +1072,67 @@ def _ensure_cuda_libraries():
     return okflag
 
 
-_ensure_cuda_libraries()
+_CUDA_BOOTSTRAP_OK = _ensure_cuda_libraries()
+
+
+def _show_startup_notice(force=False):
+    """在耗时的 AI 模块导入前先显示一个可见、可理解的等待窗口。"""
+    if not force and not (getattr(_sys, "frozen", False) and len(_sys.argv) <= 1):
+        return None
+    try:
+        import tkinter as _startup_tk
+        from tkinter import ttk as _startup_ttk
+
+        win = _startup_tk.Tk()
+        win.title("PDF 文字识别工具 · 正在启动")
+        win.configure(bg="#FFFFFF")
+        win.resizable(False, False)
+        width, height = 540, 210
+        screen_w = win.winfo_screenwidth()
+        screen_h = win.winfo_screenheight()
+        win.geometry("%dx%d+%d+%d" %
+                     (width, height, max(0, (screen_w - width) // 2),
+                      max(0, (screen_h - height) // 3)))
+        try:
+            win.iconbitmap(_asset_path("doctorcat-faithful-windows-exe-multisize.ico"))
+        except Exception:
+            pass
+
+        body = _startup_tk.Frame(win, bg="#FFFFFF")
+        body.pack(fill="both", expand=True, padx=34, pady=28)
+        try:
+            win._startup_cat = _startup_tk.PhotoImage(
+                file=_asset_path("ui", "doctorcat-puzzle-dialog.png"))
+            _startup_tk.Label(body, image=win._startup_cat,
+                              bg="#FFFFFF").pack(side="left", padx=(0, 18))
+        except Exception:
+            pass
+        text_box = _startup_tk.Frame(body, bg="#FFFFFF")
+        text_box.pack(side="left", fill="both", expand=True)
+        _startup_tk.Label(text_box, text="PDFOCR 正在打开",
+                          font=("微软雅黑", 14, "bold"), bg="#FFFFFF",
+                          fg="#111111").pack(anchor="w")
+        _startup_tk.Label(
+            text_box,
+            text="AI 引擎初始化需要一定时间，请耐心等待。\n请不要关闭此提示窗口，主界面就绪后它会自动消失。",
+            justify="left", font=("微软雅黑", 9), bg="#FFFFFF", fg="#666666"
+        ).pack(anchor="w", pady=(9, 14))
+        bar = _startup_ttk.Progressbar(text_box, mode="indeterminate", length=340)
+        bar.pack(anchor="w")
+        bar.start(12)
+        win.protocol("WM_DELETE_WINDOW", lambda: None)
+        try:
+            win.attributes("-topmost", True)
+        except Exception:
+            pass
+        win.update_idletasks()
+        win.update()
+        return win
+    except Exception:
+        return None
+
+
+_STARTUP_NOTICE = _show_startup_notice()
 
 
 import logging
@@ -752,6 +1182,28 @@ def clamp_zoom(max_side_points, target_dpi, max_pixels):
     if max_side_points * theoretical > ceiling:
         return ceiling / max_side_points
     return theoretical
+
+
+def get_textwriter_crop_y_delta(page, tolerance=0.01):
+    """计算 TextWriter 在上下 CropBox 不对称时的纵向误差。
+
+    PyMuPDF 的 CropBox 采用左上原点坐标，因此：
+      上裁剪量 = cropbox.y0
+      下裁剪量 = mediabox 高度 - cropbox.y1
+
+    返回值为正时，当前 TextWriter 会向下偏该数值；
+    返回值为负时，会向上偏。标准页面和上下对称
+    裁剪页面都严格返回 0，不改变原有坐标。
+    """
+    cropbox = page.cropbox
+    top_crop = float(cropbox.y0)
+    # 必须取 Rect.height，不能取 mediabox_size.y：当 MediaBox
+    # 本身以非零 y0 起算时，后者是右下角坐标，不是高度。
+    bottom_crop = float(page.mediabox.height - cropbox.y1)
+    delta_y = bottom_crop - top_crop
+    if abs(delta_y) < float(tolerance):
+        return 0.0
+    return delta_y
 
 
 def parse_page_range(page_str, total_pages):
@@ -815,8 +1267,6 @@ class AIModelEngine:
     # 低分辨率影印件上把它们放宽能让检测端的墨迹覆盖从 93.7% 提到 99.8%。
     _det_thresh = None
     _det_box_thresh = None
-    _layout_mode = "fast"   # "fast" = 轻量 LayoutDetection；"v3" = 原有 PPStructureV3
-    _layout_kind = None     # 实际用上的是哪一条通道，供日志显示
     _det_limit_side_len = 1600   # 文字检测网络的输入长边上限，0 = 不限制(旧行为)
     _device = None               # 实际使用的运算设备，由 resolve_device() 探测一次后缓存
 
@@ -873,50 +1323,46 @@ class AIModelEngine:
         输入同一张图，输出同样的 label + coordinate，但不带任何 OCR，
         也不会拉 PP-Chart2Table。
 
-        原来的 PPStructureV3 通道完整保留，加 --layout-engine v3 即可切回，
-        方便对比两者的版面框是否一致。
+        =================================================================
+        【275 版】：彻底移除 PPStructureV3 退路
+        -----------------------------------------------------------------
+        此前保留 V3 作为兜底，是想着"万一轻量通道在某些环境不可用"。
+        实践下来它只带来坏处，没带来好处：
+
+        1. V3 会**无条件**加载 PP-Chart2Table（1368 MB）与
+           PP-DocBlockLayout（124 MB），共 1492 MB。这是 PaddleX 源码里
+           的缺陷 —— chart 模型的实例化没有任何开关保护，`use_chart_
+           recognition=False` 只在推理时生效，拦不住加载。
+        2. 结果是只要有任何一条代码路径碰到 V3，这 1492 MB 就会被拉进
+           模型缓存。发布包因此凭空胖了 1.5 GB，用户跑一次诊断也会莫名
+           其妙开始下载 1.4 GB。
+        3. 而这条退路从未真正派上用场：轻量通道在所有实测环境下都正常。
+
+        所以本版把 V3 相关的实例化、命令行开关、自检项一并删除。
+        轻量通道若真的失败，直接抛出带排查建议的异常，而不是悄悄退回一条
+        会拖垮体积的通道 —— 出错要让人看见，不要用更差的方案掩盖。
         =================================================================
         """
         if cls._layout_engine is None:
-            mode = cls._layout_mode
-            if mode != "v3":
-                try:
-                    from paddleocr import LayoutDetection
-                    cls._layout_engine = LayoutDetection(
-                        model_name="PP-DocLayout_plus-L",
-                        device=cls.resolve_device(),
-                        enable_mkldnn=False
-                    )
-                    cls._layout_kind = "fast"
-                    return cls._layout_engine
-                except Exception as e:
-                    # 轻量通道万一在某些环境不可用，自动退回原有的 V3 通道，
-                    # 保证功能永远不会因为这次优化而失效。
-                    #
-                    # 【260 版修正】原先这里只打印 type(e).__name__，把真正的
-                    # 错误信息吞掉了。打包成 exe 后出问题时，看到的只有一句
-                    # "RuntimeError"，完全无从查起。现在打印完整堆栈。
-                    print(f"   [!] 轻量版面引擎不可用，自动退回 PPStructureV3。")
-                    print(f"       原因: {type(e).__name__}: {e}")
-                    import traceback as _tb
-                    for _line in _tb.format_exc().splitlines()[-6:]:
-                        print("       | " + _line)
-
-            from paddleocr import PPStructureV3
-            cls._layout_engine = PPStructureV3(
-                use_region_detection=True,
-                use_table_recognition=False,
-                use_formula_recognition=False,
-                use_seal_recognition=False,
-                use_chart_recognition=False,
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-                device=cls.resolve_device(),
-                precision="fp32",
-                enable_mkldnn=False
-            )
-            cls._layout_kind = "v3"
+            try:
+                from paddleocr import LayoutDetection
+                cls._layout_engine = LayoutDetection(
+                    model_name="PP-DocLayout_plus-L",
+                    device=cls.resolve_device(),
+                    enable_mkldnn=False
+                )
+            except Exception as e:
+                import traceback as _tb
+                print("   [!] 版面分析模型加载失败。")
+                print(f"       原因: {type(e).__name__}: {e}")
+                for _line in _tb.format_exc().splitlines()[-6:]:
+                    print("       | " + _line)
+                print("       排查建议：")
+                print("         · 确认程序目录下 paddlex_cache\\official_models\\ 里")
+                print("           有 PP-DocLayout_plus-L 这个文件夹；")
+                print("         · 用 --selftest 查看更完整的环境报告；")
+                print("         · 也可以勾选【关闭页边滤除】跳过版面分析直接识别。")
+                raise
         return cls._layout_engine
 
     @classmethod
@@ -1481,22 +1927,17 @@ def split_double_pages(src_doc, args):
 def analyze_smart_layout(pdf_doc, args):
     """
     [阶段一独立模块]：全局智能版面抽样分析与边界拟合
-    功能：加载 PPStructureV3 大模型，抽取连续页进行结构嗅探，并运行滤波算法剔除页眉页脚噪音。
+    功能：加载版面分析模型，抽取连续页进行结构嗅探，并运行滤波算法剔除页眉页脚噪音。
     返回：包含 6 个全局安全边界参数的字典 dict。
     """
-    from paddleocr import PPStructureV3
     import numpy as np
 
     if hasattr(args, 'ui_callback'):
         args.ui_callback(2, "STAGE 2: ALIGNING LAYOUT AI", "阶段 2/6: 正在调取版面分析大模型...")
 
     # 【改动】：直接从全局缓存池获取模型，首次调用耗时，后续瞬间完成
-    AIModelEngine._layout_mode = getattr(args, 'layout_engine', 'fast')
     layout_engine = AIModelEngine.get_layout_engine()
-    if AIModelEngine._layout_kind == "fast":
-        print("   └─ 版面引擎: 轻量通道 LayoutDetection（不做多余的 OCR，不加载图表模型）")
-    else:
-        print("   └─ 版面引擎: 完整通道 PPStructureV3（较慢，显存占用大）")
+    print("   └─ 版面引擎: LayoutDetection（单体模型，不做多余的 OCR，不加载图表模型）")
 
     # =========================================================================
     # [阶段一]：全局智能版面抽样分析
@@ -2326,6 +2767,11 @@ def execute_ocr_and_render(pdf_doc, layout_bounds, args, input_pdf_path, output_
 
         page = pdf_doc.load_page(page_number)
 
+        # 【280 版】每页只计算一次 CropBox 纵向补偿。普通页面与
+        # 上下对称裁剪页面的结果都为 0，只有上下裁剪不对称时
+        # 才会对高速 TextWriter 落点进行反向补偿。
+        textwriter_crop_y_delta = get_textwriter_crop_y_delta(page)
+
         # 预处理：擦除 PDF 现有的文字图层，防止原有乱码干扰
         _t_mark = _time.perf_counter() if _timing_on else 0.0
         page.add_redact_annot(page.rect)
@@ -2858,7 +3304,10 @@ def execute_ocr_and_render(pdf_doc, layout_bounds, args, input_pdf_path, output_
 
                         part_start_x_pdf = true_x0 + (pt_bl[0] / zoom) + fast_offset
                         part_start_y_pdf = true_y0 + (pt_bl[1] / zoom)
-                        part_unrotated = fitz.Point(part_start_x_pdf, part_start_y_pdf) * page.derotation_matrix
+                        part_unrotated = fitz.Point(
+                            part_start_x_pdf,
+                            part_start_y_pdf - textwriter_crop_y_delta,
+                        ) * page.derotation_matrix
 
                         tw.append(part_unrotated, char, font=f_obj, fontsize=fs)
 
@@ -2896,8 +3345,12 @@ def execute_ocr_and_render(pdf_doc, layout_bounds, args, input_pdf_path, output_
                     skew_morph = None
                     skew_morph_pure = None
                     if abs(text_angle) > 1e-9:
-                        _pivot = fitz.Point(true_x0 + (pt_bl[0] / zoom),
-                                            true_y0 + (pt_bl[1] / zoom)) * page.derotation_matrix
+                        _pivot_visual = fitz.Point(true_x0 + (pt_bl[0] / zoom),
+                                                  true_y0 + (pt_bl[1] / zoom))
+                        _pivot = fitz.Point(
+                            _pivot_visual.x,
+                            _pivot_visual.y - textwriter_crop_y_delta,
+                        ) * page.derotation_matrix
                         skew_morph = (_pivot, fitz.Matrix(-text_angle))
                         skew_morph_pure = (fitz.Point(pt_bl[0] / zoom, pt_bl[1] / zoom),
                                            fitz.Matrix(-text_angle))
@@ -3575,13 +4028,56 @@ class PDFOCRApp:
         style.configure('TCheckbutton', background='#FFFFFF', font=("微软雅黑", 10, "bold"), foreground="#333333")
         style.configure('TFrame', background='#FFFFFF')
 
+        # 【274 版】加载 Doctor Cat 四态形象。任何一张缺失都只是没有猫，
+        # 绝不能影响主程序启动，所以整段包在 try 里，失败就退化为无图模式。
+        self._cat_imgs = {}
+        self._cat_dialog_imgs = {}
+        for _st in ("idle", "puzzle", "smile", "defeated"):
+            for _kind, _store in (("header", self._cat_imgs), ("dialog", self._cat_dialog_imgs)):
+                try:
+                    _store[_st] = tk.PhotoImage(
+                        file=_asset_path("ui", "doctorcat-%s-%s.png" % (_st, _kind)))
+                except Exception:
+                    pass
+        # 窗口 / 任务栏图标
+        try:
+            self.root.iconbitmap(_asset_path("doctorcat-faithful-windows-exe-multisize.ico"))
+        except Exception:
+            try:
+                self._icon_img = tk.PhotoImage(
+                    file=_asset_path("doctorcat-faithful-explorer-small-48x48.png"))
+                self.root.iconphoto(True, self._icon_img)
+            except Exception:
+                pass
+
         main_frame = tk.Frame(root, bg="#FFFFFF", padx=40, pady=25)
         # 【修改点1】：增加 anchor="n" 确保主框架内的组件永远置顶对齐，避免因窗口高度变化导致的内部垂直重绘（上下跳动）
         main_frame.pack(fill="both", expand=True, anchor="n")
 
         # 标题区
-        tk.Label(main_frame, text="N E X U S  P D F - O C R   E N G I N E", font=("Arial", 22, "bold"), bg="#FFFFFF", fg="#111111").pack(pady=(0, 5))
-        tk.Label(main_frame, text="智能排版分析与OCR识别覆写系统", font=("微软雅黑", 9), bg="#FFFFFF", fg="#888888").pack(pady=(0, 20))
+        # 【274 版】改为三列网格：左右两列等权重留白，标题居中不动，
+        # 猫贴在中间那列的右侧。这样标题的视觉重心与原来完全一致，
+        # 只是右边多了一只猫，不会因为加图把标题挤偏。
+        head_frame = tk.Frame(main_frame, bg="#FFFFFF")
+        head_frame.pack(fill="x", pady=(0, 20))
+        head_frame.grid_columnconfigure(0, weight=1)
+        head_frame.grid_columnconfigure(2, weight=1)
+
+        title_box = tk.Frame(head_frame, bg="#FFFFFF")
+        title_box.grid(row=0, column=1)
+        tk.Label(title_box, text="N E X U S  P D F - O C R   E N G I N E",
+                 font=("Arial", 22, "bold"), bg="#FFFFFF", fg="#111111").pack(pady=(0, 5))
+        tk.Label(title_box, text="智能排版分析与OCR识别覆写系统",
+                 font=("微软雅黑", 9), bg="#FFFFFF", fg="#888888").pack()
+
+        self.lbl_cat = tk.Label(head_frame, bg="#FFFFFF")
+        # 【274 版】主标题在 800px 窗口下本身就要 647px（共 720px 可用），
+        # 留给猫的只有约 70px，所以页头素材取 64px 高（54px 宽），padx 收到 8。
+        # 实测总占用 713px，留 7px 余量，不会把标题挤偏也不会压扁猫。
+        self.lbl_cat.grid(row=0, column=2, sticky="w", padx=(40, 0))
+        ToolTip(self.lbl_cat, "Doctor Cat —— 本程序的状态指示。" + "\n" +
+                              "待机 / 识别中 / 已完成 / 出错，会换四种表情。")
+        self.set_cat("idle")
 
         # ==========================================
         # 第一区：文件与目录 IO
@@ -3657,6 +4153,12 @@ class PDFOCRApp:
         self.btn_start = tk.Button(bot_frame, text="INITIALIZE SEQUENCE  /  启动识别序列", command=self.start_processing,
                                     bg="#111111", fg="#FFFFFF", font=("微软雅黑", 11, "bold"),
                                     activebackground="#333333", activeforeground="#FFFFFF",
+                                    # 【274 版】按钮在处理期间是 state="disabled"，而 Tk 对
+                                    # 禁用态**不用 fg，改用 disabledforeground**（默认系统灰）。
+                                    # 加上原先又把底色换成浅灰 #CCCCCC，于是灰字压浅灰底，
+                                    # 进度条和阶段文字几乎看不见。这里显式给一个亮青蓝，
+                                    # 配合下面把处理态底色改深，两者对比度都够。
+                                    disabledforeground="#A8ECFF",
                                     relief="flat", cursor="hand2", height=2)
         # 按钮下方的间距收紧，让状态灯靠近按钮
         self.btn_start.pack(fill="x", pady=(0, 8))
@@ -3730,6 +4232,8 @@ class PDFOCRApp:
         # --- 1. 指定处理页码组件 ---
         self.var_enable_pages = tk.BooleanVar(value=False)
         self.var_pages = tk.StringVar()
+        # 竖排文本是文档形制，不应藏在高级参数中；默认仍保持关闭。
+        self.var_vertical = tk.BooleanVar(value=False)
 
         page_toggle_box = tk.Frame(ctrl_frame, bg="#FFFFFF", cursor="hand2")
         page_toggle_box.pack(side="left")
@@ -3743,13 +4247,11 @@ class PDFOCRApp:
         self.entry_pages = tk.Entry(ctrl_frame, textvariable=self.var_pages, font=("Arial", 9), width=10, relief="solid", bd=1, state="disabled", disabledbackground="#F0F0F0")
         self.entry_pages.pack(side="left", padx=8)
 
-        # 【273 版】同上，原标签宽 267px，长说明改为悬停浮出。
-        _pg_hint = tk.Label(ctrl_frame, text="格式: 5 或 5-10", font=("微软雅黑", 8),
-                            bg="#FFFFFF", fg="#999999")
-        _pg_hint.pack(side="left")
-        ToolTip(_pg_hint, "先勾选左侧方框，再填页码，否则该输入框不生效。\n"
-                          "填绝对页码（从 1 开始数的物理页），可以是单页 5，也可以是范围 5-10。\n"
-                          "若同时开启了双联页拆分，页码按拆分前的物理页计算。")
+        _page_tip = ("先勾选左侧方框，再填页码，否则该输入框不生效。\n"
+                     "填绝对页码（从 1 开始数的物理页），可以是单页 5，也可以是范围 5-10。\n"
+                     "若同时开启了双联页拆分，页码按拆分前的物理页计算。")
+        ToolTip(page_toggle_box, _page_tip, deep=True)
+        ToolTip(self.entry_pages, _page_tip)
 
         # 页码联动控制函数
         def toggle_page_entry(*args):
@@ -3769,18 +4271,44 @@ class PDFOCRApp:
         page_toggle_box.bind("<Button-1>", manual_toggle_page)
 
         # 视觉分隔符
-        tk.Label(ctrl_frame, text=" | ", font=("Arial", 10), bg="#FFFFFF", fg="#DDDDDD").pack(side="left", padx=15)
+        tk.Label(ctrl_frame, text=" | ", font=("Arial", 10), bg="#FFFFFF", fg="#DDDDDD").pack(side="left", padx=16)
 
-        # --- 2. 自动打开文档组件 ---
+        # --- 2. 竖排文本识别组件（主页面显式展示） ---
+        vertical_toggle_frame = tk.Frame(ctrl_frame, bg="#FFFFFF", cursor="hand2")
+        vertical_toggle_frame.pack(side="left")
+
+        self.icon_vertical = tk.Label(vertical_toggle_frame, text="□", font=("Arial", 14),
+                                      bg="#FFFFFF", fg="#BBBBBB")
+        self.icon_vertical.pack(side="left", padx=(0, 6))
+        lbl_vertical = tk.Label(vertical_toggle_frame, text="竖排文本识别",
+                                font=("微软雅黑", 9, "bold"), bg="#FFFFFF", fg="#333333")
+        lbl_vertical.pack(side="left")
+
+        def toggle_vertical(*args):
+            self.var_vertical.set(not self.var_vertical.get())
+            self.icon_vertical.config(text="■" if self.var_vertical.get() else "□",
+                                      fg="#00AEEF" if self.var_vertical.get() else "#BBBBBB")
+
+        self.icon_vertical.bind("<Button-1>", toggle_vertical)
+        lbl_vertical.bind("<Button-1>", toggle_vertical)
+        vertical_toggle_frame.bind("<Button-1>", toggle_vertical)
+        ToolTip(vertical_toggle_frame,
+                "适用于自上而下、自右向左排版的竖排页面。开启后会按列写入文字层，"
+                "并针对竖排扫描件调整识别策略。普通横排文档请保持关闭。", deep=True)
+
+        tk.Label(ctrl_frame, text=" | ", font=("Arial", 10), bg="#FFFFFF",
+                 fg="#DDDDDD").pack(side="left", padx=16)
+
+        # --- 3. 自动打开文档组件 ---
         self.var_auto_open = tk.BooleanVar(value=True)
 
         auto_toggle_frame = tk.Frame(ctrl_frame, bg="#FFFFFF", cursor="hand2")
         auto_toggle_frame.pack(side="left")
 
         self.icon_auto_open = tk.Label(auto_toggle_frame, text="■", font=("Arial", 14), bg="#FFFFFF", fg="#00AEEF")
-        self.icon_auto_open.pack(side="left", padx=(0, 4))
+        self.icon_auto_open.pack(side="left", padx=(0, 6))
 
-        lbl_auto_open = tk.Label(auto_toggle_frame, text="【可选】完成时自动打开文档", font=("微软雅黑", 9, "bold"), bg="#FFFFFF", fg="#333333")
+        lbl_auto_open = tk.Label(auto_toggle_frame, text="完成时自动打开文档", font=("微软雅黑", 9, "bold"), bg="#FFFFFF", fg="#333333")
         lbl_auto_open.pack(side="left")
 
         # 自动打开联动控制函数
@@ -3877,13 +4405,11 @@ class PDFOCRApp:
         self.var_timing = tk.BooleanVar(value=False)         # 【新增】分段计时诊断开关
         # 【261 版新增】倾斜校正默认开启，这个开关是"关掉它"，所以默认 False
         self.var_no_skew = tk.BooleanVar(value=False)
-        # 【262 版新增】竖排文本，必须用户显式勾选，默认关闭
-        self.var_vertical = tk.BooleanVar(value=False)
         # 【269 版新增】多尺度深度扫描，耗时翻倍，默认关闭
         self.var_multi_scale = tk.BooleanVar(value=False)
 
         # ==============================================================
-        # 【271 版新增】悬停提示
+        # 【271 版新增】高级参数悬停提示
         # --------------------------------------------------------------
         # 界面上只留两行短说明，完整解释（为什么要有这个开关、什么时候该用、
         # 代价是什么）改为鼠标悬停时浮出。这样既不牺牲信息量，又不会让面板
@@ -4010,7 +4536,7 @@ class PDFOCRApp:
             attach_tip(f, tip)
 
         # ==========================================================
-        # 【本版本改动 2 / 261 版扩充】按实际使用频率排列的 9 条指令
+        # 【281 版】竖排文本已移至主页面；高级区只保留干预与诊断选项。
         # ----------------------------------------------------------
         # 排序原则：越靠前 = 越多人会去动它；越靠后 = 越偏开发者自查。
         # 阅读顺序是「从左到右、从上到下」，整条序列严格按频率单调递减：
@@ -4048,54 +4574,48 @@ class PDFOCRApp:
                       "可以各自框选边界。注意：输出 PDF 的页数会变成原来的两倍；"
                       "指定处理页码时按拆分前的物理页计算。")
 
-        # ---------- 第 2 行：文档形制 + 输出产物形态 ----------
-        create_option(opt_frame, 1, 0, self.var_vertical, "竖排文本 (-V)",
-                      "自上而下、自右向左排版的\n竖排页面（如日文书刊、旧式排印）。",
-                      "文字层按列写入，列序自右向左重排，字号取自列长÷字数。开启后会自动"
-                      "跳过版面分析（竖排页上的天头地脚拟合不可靠），并对低分辨率扫描件"
-                      "自动提高渲染与检测精度。\n"
-                      "注意：低分辨率的密排影印件（尤其带双行夹注的）识别效果有限，"
-                      "受识别模型能力限制，不建议用于要求文字层完整的场合。")
-        create_option(opt_frame, 1, 1, self.var_inplace, "原地覆写模式 (-I)",
+        # ---------- 第 2 行：输出产物形态 ----------
+        create_option(opt_frame, 1, 0, self.var_inplace, "原文件覆写 (-I)",
                       "直接改写源 PDF，\n不再另存新文件。",
-                      "识别结果直接写回原文件，不生成 -OCR 副本。省磁盘，但原件会被替换，"
+                      "识别结果直接写回原文件，不创建副本。省磁盘，但原件会被替换，"
                       "建议先自行备份。")
 
         # ---------- 第 3 行：产物形态续 + 疑难救援 ----------
-        create_option(opt_frame, 2, 0, self.var_pure, "纯净文本模式 (-p)",
-                      "额外生成一份剥离背景、\n只保留文字与排版的白底 PDF。",
-                      "在正常输出之外再生成一个 -pure 文件：白底、无扫描图像，只按原位置"
-                      "保留可见文字。适合需要干净排版底稿、或想直观检查文字层落点是否准确的场合。")
-        create_option(opt_frame, 2, 1, self.var_no_skew, "关闭倾斜校正 (--no-skew)",
+        create_option(opt_frame, 1, 1, self.var_multi_scale, "多尺度深度扫描 (--multi-scale)",
+                      "按 5 个缩放各识别一遍再合并。\n耗时约 5 倍，仅低清影印件需要。",
+                      "低分辨率影印件里细密小字的检测正好卡在模型的阈值上：换一个渲染缩放，"
+                      "同一列可能就从抓不到变成抓得到。本项按 5 个相邻缩放各识别一遍再合并"
+                      "去重，实测可用文字约提高两成。\n"
+                      "代价是耗时约为原来的 5 倍，清晰的印刷品不需要开。")
+        create_option(opt_frame, 2, 0, self.var_no_skew, "关闭倾斜校正 (--no-skew)",
                       "强制水平写入文字层。\n仅在校正后反而对不齐时勾选。",
                       "默认会让文字层跟随每一行的真实倾角一起倾斜，以贴合歪斜的扫描件——"
                       "小于 0.3 度视为不倾斜，大于 30 度视为异常框不予校正。"
                       "勾选此项则一律水平写入，回到旧版行为。")
 
         # ---------- 第 4 行：疑难文件救援（偶尔用） ----------
-        create_option(opt_frame, 3, 0, self.var_pixmap, "光栅化页面渲染 (-P)",
-                      "先把矢量图层压成位图再分析。\n对付损毁或加密的文档。",
-                      "强制把页面里的矢量元素合并渲染成位图之后再送识别。用于图文损毁、"
-                      "或被加密限制导致常规提取失败的文献。")
-        create_option(opt_frame, 3, 1, self.var_no_ocr, "擦除矢量层 (-n)",
+
+        create_option(opt_frame, 2, 1, self.var_pure, "纯净文本模式 (-p)",
+                      "额外生成一份剥离背景、\n只保留文字与排版的白底 PDF。",
+                      "在正常输出之外再生成一个 -pure 文件：白底、无扫描图像，只按原位置"
+                      "保留可见文字。适合需要干净排版底稿、或想直观检查文字层落点是否准确的场合。")
+        create_option(opt_frame, 3, 0, self.var_no_ocr, "擦除矢量层 (-n)",
                       "只剥离原有文字层，不做识别。\n用于清除错误的旧识别结果。",
                       "跳过整个识别环节，仅把 PDF 里已有的文字图层擦掉。常用于"
                       "先清除一次失败的识别结果，再重新跑一遍。")
 
         # ---------- 第 5 行：低清影印件专用 + 开发者自查 ----------
-        create_option(opt_frame, 4, 0, self.var_multi_scale, "多尺度深度扫描 (--multi-scale)",
-                      "按 5 个缩放各识别一遍再合并。\n耗时约 5 倍，仅低清影印件需要。",
-                      "低分辨率影印件里细密小字的检测正好卡在模型的阈值上：换一个渲染缩放，"
-                      "同一列可能就从抓不到变成抓得到。本项按 5 个相邻缩放各识别一遍再合并"
-                      "去重，实测可用文字约提高两成。\n"
-                      "代价是耗时约为原来的 5 倍，清晰的印刷品不需要开。")
-        create_option(opt_frame, 4, 1, self.var_debug, "色彩置信度显影 (-g)",
+        create_option(opt_frame, 3, 1, self.var_pixmap, "转图片识别 (-P)",
+                      "先把矢量图层压成位图再分析。\n对付损毁或加密的文档。",
+                      "强制把页面里的矢量元素合并渲染成位图之后再送识别。用于图文损毁、"
+                      "或被加密限制导致常规提取失败的文献。")
+        create_option(opt_frame, 4, 0, self.var_debug, "色彩置信度显影 (-g)",
                       "【调试】把文字层以热力图颜色\n可见地烙在画面上。",
                       "把本该隐形的文字层改为可见，并按识别置信度上色：色彩越冷，"
                       "代表模型对该字符越没把握。用于直观排查识别质量与落点。")
 
         # ---------- 第 6 行：开发者自查（普通用户不必理会） ----------
-        create_option(opt_frame, 5, 0, self.var_timing, "分段计时诊断 (--timing)",
+        create_option(opt_frame, 4, 1, self.var_timing, "分段计时诊断 (--timing)",
                       "【调试】打印每页各阶段耗时，\n并检测是否真的在用 GPU。",
                       "在控制台打印每页的耗时构成（渲染 / 擦除 / 推理 / 写入），并检测 Paddle "
                       "是否真的在用显卡运算。用于判断速度瓶颈到底在本程序的代码，还是在显卡。")
@@ -4107,6 +4627,67 @@ class PDFOCRApp:
         # ==========================================
         self.lbl_status.config(text="System Booting: 正在后台预热神经网络，界面可正常操作...", fg="#FFA500")
         #threading.Thread(target=self._silent_preload_models, daemon=True).start()
+
+    def set_cat(self, state):
+        """
+        切换标题右侧的猫咪表情。state ∈ idle / puzzle / smile / defeated。
+        素材缺失时静默跳过，不影响任何功能。
+        """
+        img = self._cat_imgs.get(state)
+        if img is not None:
+            try:
+                self.lbl_cat.config(image=img)
+                self.lbl_cat.image = img          # 必须持引用，否则会被 GC 掉变空白
+            except Exception:
+                pass
+
+    def cat_dialog(self, title, message, state="defeated", ok_text="知道了"):
+        """
+        带猫咪表情的模态对话框。tkinter 的 messagebox 无法插入自定义图片，
+        所以这里自建一个 Toplevel：左边表情、右边文案、底部一个确认按钮。
+        素材缺失时自动退回系统 messagebox，保证任何情况下都有提示。
+        """
+        img = self._cat_dialog_imgs.get(state)
+        if img is None:
+            messagebox.showinfo(title, message)
+            return
+        try:
+            win = tk.Toplevel(self.root)
+            win.title(title)
+            win.configure(bg="#FFFFFF")
+            win.resizable(False, False)
+            win.transient(self.root)
+            try:
+                win.iconbitmap(_asset_path("doctorcat-faithful-windows-exe-multisize.ico"))
+            except Exception:
+                pass
+
+            body = tk.Frame(win, bg="#FFFFFF", padx=22, pady=20)
+            body.pack(fill="both", expand=True)
+            lbl_img = tk.Label(body, image=img, bg="#FFFFFF")
+            lbl_img.image = img
+            lbl_img.grid(row=0, column=0, sticky="n", padx=(0, 18))
+            tk.Label(body, text=message, justify="left", anchor="w", wraplength=380,
+                     bg="#FFFFFF", fg="#333333", font=("微软雅黑", 9)).grid(row=0, column=1, sticky="w")
+
+            btn = tk.Button(win, text=ok_text, command=win.destroy,
+                            bg="#111111", fg="#FFFFFF", activebackground="#333333",
+                            activeforeground="#FFFFFF", relief="flat", cursor="hand2",
+                            font=("微软雅黑", 9, "bold"), width=12)
+            btn.pack(pady=(0, 18))
+
+            win.update_idletasks()
+            # 居中到主窗口
+            px = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_width()) // 2
+            py = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_height()) // 3
+            win.geometry("+%d+%d" % (max(0, px), max(0, py)))
+            win.grab_set()
+            btn.focus_set()
+            win.bind("<Return>", lambda e: win.destroy())
+            win.bind("<Escape>", lambda e: win.destroy())
+            self.root.wait_window(win)
+        except Exception:
+            messagebox.showinfo(title, message)
 
     def _silent_preload_models(self):
         """后台静默加载核心大模型，防止首次处理时产生卡顿"""
@@ -4203,7 +4784,7 @@ class PDFOCRApp:
         pdf_files = [p for p in folder_path.rglob("*") if p.suffix.lower() == '.pdf']
 
         if not pdf_files:
-            messagebox.showinfo("提示", f"在 '{folder_path.name}' 中未找到任何 PDF 文件。")
+            self.cat_dialog("提示", f"在 '{folder_path.name}' 中未找到任何 PDF 文件。")
             return
 
         self.input_files = [str(p) for p in pdf_files]
@@ -4235,7 +4816,7 @@ class PDFOCRApp:
 
     def start_processing(self):
         if not self.input_files:
-            messagebox.showwarning("序列错误", "引擎缺少必要的数据输入源！\n请先装载 PDF 文件。")
+            self.cat_dialog("序列错误", "引擎缺少必要的数据输入源！\n请先装载 PDF 文件。")
             return
 
         # 初始启动时的 UI 状态
@@ -4243,6 +4824,7 @@ class PDFOCRApp:
         self.btn_files.config(state="disabled")
         self.btn_dir.config(state="disabled")
         self.lbl_status.config(text="进程已锁定，正在握手...", fg="#FF5555")
+        self.set_cat("puzzle")          # 【274】进入识别 -> 疑惑脸
 
         threading.Thread(target=self.run_ocr_tasks, daemon=True).start()
 
@@ -4274,7 +4856,9 @@ class PDFOCRApp:
             self.output_dir = dir_path
             self.lbl_dir.config(text=f"阵列指向: ...{self.output_dir[-25:] if len(self.output_dir)>25 else self.output_dir}", fg="#00AEEF")
 
-        self.btn_start.config(state="disabled", text="PROCESSING... / 神经网络正在全速运算", bg="#CCCCCC")
+        # 【274 版】处理态底色由浅灰 #CCCCCC 改为深青，既与待机的纯黑区分开，
+        # 又能让 disabledforeground 的亮青蓝字清晰可读。
+        self.btn_start.config(state="disabled", text="PROCESSING... / 神经网络正在全速运算", bg="#123A47")
         self.btn_files.config(state="disabled")
         self.btn_dir.config(state="disabled")
         self.lbl_status.config(text="进程中：系统负载上升，处理速度约1~2 sec / page ，\n期间界面可能失去响应，请勿强行中断指令...", fg="#FF5555")
@@ -4353,7 +4937,6 @@ class PDFOCRApp:
             split_lossless=False,   # True = 无损存半页（内存占用约 27 倍，一般用不到）
             # --- 【新增】性能相关参数 ---
             det_limit=det_limit,    # 文字检测网络的输入长边上限（0 = 不限制）
-            layout_engine="fast",   # 版面分析走轻量通道；改成 "v3" 可退回旧的 PPStructureV3
             timing=self.var_timing.get(),   # 是否打印分段计时报告与设备体检
             legacy_text=False,      # True = 退回旧的逐字符慢速写入通道
             gc_interval=10,         # 每多少页强制回收一次内存
@@ -4392,7 +4975,7 @@ class PDFOCRApp:
                 if isinstance(result, str) and result.startswith("ERROR_PAGE:"):
                     error_msg = result.split("ERROR_PAGE:", 1)[1]
                     # 跨线程安全弹窗
-                    self.root.after(0, lambda m=error_msg: messagebox.showerror("页码格式错误", f"任务已强制中止：\n\n{m}"))
+                    self.root.after(0, lambda m=error_msg: self.cat_dialog("页码格式错误", f"任务已强制中止：\n\n{m}"))
                     break # 直接打断整个批处理序列！
 
                 if result == "SKIPPED_NATIVE":
@@ -4437,7 +5020,7 @@ class PDFOCRApp:
             except Exception as e:
                 print(f"无法打开目录: {e}")
         else:
-            messagebox.showinfo("提示", "当前未设定输出目录，且未装载任何文件。")
+            self.cat_dialog("提示", "当前未设定输出目录，且未装载任何文件。")
 
     def open_single_file(self, file_path):
         """通用安全组件：调用系统默认阅读器打开指定的单一文件"""
@@ -4460,6 +5043,8 @@ class PDFOCRApp:
         self.btn_files.config(state="normal")
         self.btn_dir.config(state="normal")
         self.lbl_status.config(text="System Standing By.", fg="#00AEEF")
+        # 【274】有产出 -> 微笑；一个都没成 -> 沮丧
+        self.set_cat("smile" if success_count > 0 else "defeated")
 
         msg = f"分析序列已结束！\n安全处理完成 {success_count} / {total_count} 个数据包。"
 
@@ -4468,7 +5053,8 @@ class PDFOCRApp:
             skipped_list_str = "\n".join([f" • {name}" for name in skipped_native_files])
             msg += f"\n\n【智能滤过拦截】\n {skipped_count} 个文件被检测为【原生排版文献】且未开启页边滤除，因此被系统自动豁免，无需运行耗时识别：\n{skipped_list_str}"
 
-        messagebox.showinfo("序列状态报告", msg)
+        self.cat_dialog("序列状态报告", msg,
+                        state="smile" if success_count > 0 else "defeated")
 
 # =========================================================================
 # [独立模块 2]：CLI 命令行参数解析器
@@ -4614,14 +5200,6 @@ def parse_arguments():
              "(default 1600; vertical mode auto-raises it to 2800 on scans "
              "below 150 DPI). Lower = far less GPU memory and faster; "
              "0 disables the limit.",
-    )
-    parser.add_argument(
-        "--layout-engine",
-        choices=["fast", "v3"],
-        default="fast",
-        help="Layout analysis backend: 'fast' uses the standalone LayoutDetection "
-             "model (default, no redundant OCR pass); 'v3' restores the original "
-             "PPStructureV3 pipeline.",
     )
     parser.add_argument(
         "--timing",
@@ -4887,6 +5465,8 @@ def run_selftest():
     print("   APP_DIR              : %s" % APP_DIR)
     print("   _MEIPASS             : %s" % getattr(_sys, "_MEIPASS", "(无)"))
     print("   PADDLE_PDX_CACHE_HOME: %s" % _os.environ.get("PADDLE_PDX_CACHE_HOME", "(未设置)"))
+    print("   程序内含 CUDA 运算库  : %s" % _cuda_ready(_cuda_root()))
+    print("   本机已有 CUDA 运算库  : %s" % _system_has_cuda_libs())
     _cache = _os.environ.get("PADDLE_PDX_CACHE_HOME", "")
     print("   程序路径是否纯 ASCII  : %s%s" % (
         _is_ascii(APP_DIR),
@@ -4958,23 +5538,12 @@ def run_selftest():
         for l in traceback.format_exc().splitlines():
             print("        | " + l)
 
-    print("\n   [5.2] 完整通道 PPStructureV3")
-    try:
-        from paddleocr import PPStructureV3
-        eng = PPStructureV3(use_region_detection=True, use_table_recognition=False,
-                            use_formula_recognition=False, use_seal_recognition=False,
-                            use_chart_recognition=False, use_doc_orientation_classify=False,
-                            use_doc_unwarping=False, use_textline_orientation=False,
-                            device=AIModelEngine.resolve_device(),
-                            precision="fp32", enable_mkldnn=False)
-        print("        ✅ 实例化成功")
-        del eng
-    except Exception:
-        print("        ❌ 失败，完整堆栈：")
-        for l in traceback.format_exc().splitlines():
-            print("        | " + l)
+    # 【275 版】原先这里有一项 [5.2] 实例化 PPStructureV3。它是发布包平白
+    # 多出 1.5 GB 的元凶：V3 会无条件加载 PP-Chart2Table(1368MB) 和
+    # PP-DocBlockLayout(124MB)，用户只是想跑个诊断，却触发 1.4 GB 下载。
+    # V3 通道已在本版整体移除，这一项随之删除。
 
-    print("\n   [5.3] OCR 通道 PaddleOCR")
+    print("\n   [5.2] OCR 通道 PaddleOCR")
     try:
         ocr = AIModelEngine.get_ocr_engine("ch")
         print("        ✅ 实例化成功")
@@ -4994,6 +5563,15 @@ def main():
     环境嗅探引擎：根据用户启动程序的方式，智能分发执行模式。
     """
     import sys
+
+    # 独立安装模式：下载器已在任何 Paddle 导入之前运行。完成后直接退出，
+    # 不要求用户再提供一个 PDF，也不把下载参数交给业务参数解析器。
+    if "--install-cuda" in sys.argv:
+        if _CUDA_BOOTSTRAP_OK:
+            print("CUDA 运算库已经准备完成。请正常启动 PDFOCR。")
+            return
+        print("CUDA 运算库未能完成安装，请查看程序目录下的 CUDA下载日志.txt。")
+        sys.exit(2)
 
     # 核心分流逻辑：如果附带了任何额外参数，说明用户是在命令行（终端）执行的，切入 CLI 模式
     if "--selftest" in sys.argv:
@@ -5016,6 +5594,13 @@ def main():
 
     # 如果没有任何参数，说明用户是直接双击了 .py 脚本运行，智能唤醒可视化 GUI
     else:
+        global _STARTUP_NOTICE
+        if _STARTUP_NOTICE is not None:
+            try:
+                _STARTUP_NOTICE.destroy()
+            except Exception:
+                pass
+            _STARTUP_NOTICE = None
         root = tk.Tk()
 
         # 【257 版】：GUI 起来之前先做显卡自检，没有 N 卡就问一句再走，
